@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { bessel, circleModes, rectModes, Plate, findPeaks, mindlinOmega, nodalRadii, NR } from './physics.js';
+import { bessel, circleModes, rectBlock, rectBlockCount, rectModes, rectModesFromBlocks, Plate, findPeaks, mindlinOmega, nodalRadii, NR } from './physics.js';
 import { WALLER_RADII, findMode, median, nearest, sweepResonances } from './testkit.js';
 
 const close = (got, want, rel, msg) =>
@@ -271,4 +271,15 @@ test('findPeaks on a real analyser spectrum: frequency within 0.05 Hz, level wit
     assert.ok(Math.abs(p[0].f - f) < 0.05, `frequency ${p[0].f} vs ${f}`);
     assert.ok(Math.abs(p[0].db - 20 * Math.log10(0.21)) < 0.05, `level ${p[0].db} dB`); // app.js maps 0.21 → 0 dBFS
   }
+});
+
+test('rectangles solved block by block, as in worker threads, match the direct solve exactly', () => {
+  const edges = ['clamped', 'free', 'free', 'free'];
+  const blocks = rectBlockCount(edges, 0.3, 1, 18);
+  const solutions = Array.from({ length: blocks }, (_, block) => rectBlock(edges, 0.3, 1, 18, block));
+  const parallel = rectModesFromBlocks(edges, 0.3, 1, 18, solutions).modes;
+  rectModes(edges, 0.3, 1, 18).modes.forEach((mode, k) => {
+    assert.equal(parallel[k].L, mode.L);
+    assert.deepEqual(parallel[k].vec, mode.vec);
+  });
 });

@@ -11,6 +11,7 @@ The full evidence behind the summary in the [README](../README.md#how-accurate-i
 - [Leissa's book, table by table](#leissas-book-table-by-table)
 - [Errors found in Leissa's book](#errors-found-in-leissas-book)
 - [Book data not used](#book-data-not-used)
+- [Physics added later](#physics-added-later)
 
 ## Test files
 
@@ -21,6 +22,13 @@ Run everything with `npm test`. Results on this page are in the tests unless it 
 | [physics.test.js](../physics.test.js) | 12 | Core maths and real experiments |
 | [leissa.test.js](../leissa.test.js) | 6 | Leissa chapter 2, Tables 4.3–4.20 |
 | [leissa-ch4b.test.js](../leissa-ch4b.test.js) | 6 | Leissa Tables 4.22–4.76 |
+| [mindlin.test.js](../mindlin.test.js) | 13 | True Mindlin modes against exact theory and 3D elasticity |
+| [fluid.test.js](../fluid.test.js) | 17 | Fluid added mass, radiation, damping and sand mass |
+| [patch.test.js](../patch.test.js) | 12 | Finite clamps against exact annular plates and experiments |
+| [nonlinear.test.js](../nonlinear.test.js) | 10 | Large-amplitude stiffening |
+| [grains.test.js](../grains.test.js) | 13 | Sand and powder transport |
+| [plateModel.test.js](../plateModel.test.js) | 11 | All of it working together |
+| [calibrate.test.js](../calibrate.test.js) | 4 | Fitting a plate to measurements |
 
 Where a printed value disagrees, an independent exact solution (scipy) or a measurement decides. In every such case it sides with the app.
 
@@ -38,7 +46,7 @@ Where a printed value disagrees, an independent exact solution (scipy) or a meas
 
 Three modelling results also matter:
 
-- **Thick plates, other edges:** at h/a = 0.1, thin-plate theory is 6–20 % high and the corrected value is 0.4–5 % off. Below h/L ≈ 0.02 the correction is negligible. This comparison is not in the tests.
+- **Thin plates still use a per-mode correction,** below h/a = 0.005 on circles and h/L = 0.01 on rectangles. It is already 0.3–0.5 % off at 0.01 on free edges, about the size of a real plate's own uncertainty. Thicker plates use true Mindlin modes: see [below](#thick-plates).
 - **Bolted plates:** without the high-mode term, bolted resonances drift up to 3 % high at the app's usual cut-off. With it, they match exact point-support and point-mass solutions to 0.03 %.
 - **Long plates:** the basis has the same density along both sides, so long plates get more functions along their length (13 × 102 at b/a = 8).
 
@@ -204,3 +212,133 @@ Larger disagreements with named sources:
 | 4.64, 4.72 | Ödman | Single-product estimates |
 | 4.69–4.71 | Pavlik | Units unresolved, though ratios are within 1–3 % |
 | 4.77 | Waller's rectangles | Medians 1.2–3.4 % with unidentified outliers |
+
+## Physics added later
+
+Each of these answers a limit the README used to list. "Before" is the model as it stood.
+
+### Thick plates
+
+True Mindlin modes replace the per-mode correction for thicker plates. Worst error over the first 12–15 modes:
+
+| Reference | Plate | Before | After |
+|---|---|---|---|
+| Own Lévy exact solver, independent code | Five edge combinations, h/a = 0.1 | Up to 5.98 % | 5×10⁻⁶ % |
+| Own Lévy exact solver, independent code | Same, h/a = 0.2 | Up to 13.1 % | 5×10⁻⁶ % |
+| 3D elasticity (own Ritz solver) | Free square, h/a = 0.1, 0.2 | 3.3 %, 5.2 % | 0.60 %, 1.33 % |
+| 3D elasticity | Clamped square, h/a = 0.1, 0.2 | 5.2 %, 10.5 % | 1.68 %, 2.86 % |
+| 3D elasticity | Free disc, h/a = 0.1 | 0.92 % | 0.51 % |
+| 3D elasticity | Clamped disc, h/a = 0.1 | 2.12 % | 0.99 % |
+| Own polar Ritz solver, no Bessel functions | All edges, h/a = 0.1, 0.2 | Not modelled | 9×10⁻⁴ %, same root counts |
+
+- The clamped 3D reference holds the whole face, which is stiffer than Mindlin's clamp, so part of those errors may be the boundary condition.
+- Published values for n = 0 from Senjanović et al., *Arch. Mech.* 66, 389 (2014), [open copy via the journal](https://am.ippt.gov.pl/), agree within 0.002 in Λ. Their n ≥ 1 values use a different theory and were not used.
+- Effect on thin experiments is small: Escaler moves by at most 0.003 % on axisymmetric modes.
+
+**Waller's outer circles.** Leissa Table 2.8 gives her plate thickness: h/a = 0.0086–0.0156. Exact Mindlin and 3D move the outer circle by under 0.0002 r/a there, against the 0.012–0.021 gap. Closing it would need h/a of about 0.2, where frequencies fall by half or more. Poisson's ratio moves it by at most 0.0003. Her s = 5 and 6 outer radii (.956, .958) lie within 0.0034 and 0.0021 of Leissa's eq. 2.19, a formula that drops the I_n term, while her s ≤ 4 data follow exact theory. Leissa's printed Table 2.7 s = 5 outer radii are eq. 2.19 for all six n. The chance of both landing that close is about 3 %, a rough estimate. Whether her two entries were measured needs her paper, which could not be read.
+
+### Fluid loading and damping
+
+| Reference | Quantity | Before | After |
+|---|---|---|---|
+| Rigid disc, closed form | Added mass and rocking | Not modelled | 10⁻¹² |
+| Kwak 1991, as printed in Escaler Table 3 | Free disc, six modes | Not modelled | 1.5×10⁻⁴ |
+| Own vortex-ring and vortex-lattice solvers | Circles and rectangles | Not modelled | 3×10⁻⁴, 1 % on cantilevers |
+| Escaler Table 5, their FEM | Free plate in water | Standard factor 1.7–11 % off | Within 3 % |
+| Escaler Table 7, measured | Five modes in water | Standard factor 7.0 % RMS | 3.4 % RMS, all low |
+| Lambourg et al. Fig. 10a, read from the figure | 21 decay rates | Best single ζ: factor 1.4 | Factor 1.17 |
+
+What did not improve:
+
+- **Shu et al., 25 resonances.** 20 g: 1.74 % in vacuum, 1.92 % with air. Moving mass refitted: 1.86 % at 15 g. With a free scale as well: 1.66 % in vacuum, 1.62 % with air.
+- **Escaler in air, nothing fitted** (λ ≤ 25 / λ ≤ 45). Vacuum: 0.93 / 0.91 % RMS. Air: 0.61 / 0.91 %.
+- **Lindholm's cantilevers in water,** read by eye from a secondary figure: the model runs 10–30 % low. Unresolved.
+- **A second measured plate** ([Ege et al.](https://arxiv.org/abs/1210.3333), 2 mm aluminium): 0.22 % measured against 0.038 % modelled, so physical damping is an option, not the default. A rig also loses energy at the bolt, the shaker and the sand, which are not modelled.
+
+### Finite clamps
+
+| Reference | Quantity | Result |
+|---|---|---|
+| Own exact annular solver, b/a 0.02–0.1, three outer edges | λ² | Within 0.35 % |
+| Same, b/a = 0.3 | λ² | Within 1 % |
+| Leissa Tables 2.24, 2.30, 2.31 | λ², b/a 0.1–0.4 | Within 1.3 % |
+| Own exact hub with 0.08 kg, Escaler's plate | Frequencies, nodal radii | Within 0.3 %, 0.003 r/a |
+| Own exact hub with a suspended shaker | Four resonances | Within 0.3 % |
+| r₀ → 0 against the point model | Coefficients | 10⁻¹⁵ on rectangles, 10⁻⁷ on a centred circle |
+
+Compared with Escaler's measurements, nothing fitted:
+
+| Quantity | Point | 4 mm clamp |
+|---|---|---|
+| Five innermost circles, RMS r/a | 0.033 | 0.0021 |
+| Sixteen outer circles, RMS r/a | 0.0093 | 0.0071 |
+| Six frequencies | +1.8 … −0.3 % | +3.8 … +6.0 % |
+| The same, with air | +1.0 … −0.7 % | +3.1 … +5.3 % |
+
+- The 4 mm radius assumes the paper's 8 mm bar is a diameter.
+- Removing the mean offset leaves 0.7–0.8 % RMS either way, so frequencies do not choose between them. A plate about 5 % thinner or softer would cancel the offset. That is unverified.
+- On Shu's plate no washer size helps: RMS rises from 1.45 % to 1.85 % at 4 mm, and a rigid 10 mm clamp still has f1 at −14.7 %.
+- Exact theory shows a clamp shifts n = 0 modes by +1.1 to +2.7 % at r₀/a = 0.02 and +13 to +22 % at 0.1. Modes with n ≥ 2 move by at most 1.2 % up to r₀/a = 0.05.
+- Some Leissa annular cells disagree with exact theory, for example free n = 1 printed 3.14 (exact 3.478), which may be OCR error, as the scan was not checked.
+
+### Large-amplitude stiffening
+
+| Reference | Quantity | Error |
+|---|---|---|
+| Yamaki 1961 via Leissa Table 12.4 | Circles, four cases | Within 0.5 % |
+| Yamaki via Leissa Sec. 12.2, closed form | Simply supported square | Within 0.1 % |
+| VK-Gong manual (Touzé group), ν = 0.38 | Three circular modes | Within 0.01 %, with one at −0.7 %, a likely slip in the manual |
+| Own exact integrals, own displacement Ritz | Circles, rectangles | 0.05 %, 0.2 % |
+| Own time integration of a forced Duffing mode | Amplitude and hysteresis, both sweep directions | Within 1.5 % |
+
+The arbitrary warning at a deflection of 20 % of the thickness is replaced by `s = ⅜·κ_A·(a/ω²h)²/ζ`:
+
+| s | Meaning |
+|---|---|
+| Below 0.1 | Negligible |
+| 0.1–1.5 | Corrected, within 1 % at ζ ≤ 0.005 |
+| 1.5–3 | Caution |
+| Above 3 | The one-mode model has broken down |
+
+- Nothing here has been checked against a measurement. The free-edge experiments of Thomas et al. could not be read.
+- Bolted plates need coefficients for the pinned plate, which are not wired in, so they warn and do not correct.
+- Stiffening is under 0.1 half-widths above about 500 Hz on 1 mm plates and about 1 kHz on 0.3 mm plates, even at 100 g.
+
+### Sand and powder
+
+| Reference | Quantity | Result |
+|---|---|---|
+| Zhou et al. 2016 Fig. 3b, digitised | Voltage for a 175 µm displacement, 55 notes | Factor 1.5–1.8 on average, 1.9–3 note to note. Shuffled notes: 5.7 |
+| Zhou Fig. 3a, 3990 Hz | Displacement against note length | .010/.020/.040/.079/.159 mm, measured .010/.020/.044/.105/.151 |
+| The same note with tilt only | Displacement | ×150 too small |
+| Own polygon-grain simulation | Drift across Γ, e, μ, h, f, D | Within 20 % |
+| Own boundary-layer solvers | Streaming coefficient | Rayleigh's ratio to 1.0000 |
+| Faraday 1831 | Powder to antinodes, sand to nodes | Right direction, qualitative only |
+| Loubet et al. 2007 | Lycopodium settling speed | 4.07 cm/s, measured 4.2 |
+
+What the mechanism turned out to be:
+
+- Friction against the top surface's in-plane motion drives sand. Tilt is undetectable: at Γ = 5, 1 kHz and h = 1 mm, friction gives −1.37 mm/s and tilt gives 0.001 ± 0.067 mm/s.
+- Drift does not depend on grain size and is linear in thickness and in the amplitude gradient.
+- Bounce scatter from irregular shape dominates each hop and sets the random spread.
+
+What is assumed or unchecked:
+
+- Formation time for real sand has no measured reference in anything read.
+- Restitution (0.7) and friction (0.35) are from sand-grain simulations, not sand on metal.
+- The random spread comes from a 2D simulation, varies by ×3 between runs and ×10 across friction, and is capped by air drag using a derived estimate.
+- [Dorrestijn et al. 2007](https://doi.org/10.1103/physrevlett.98.026102) studied cantilevers in water, and rolling below Γ = 1 is [van Gerner et al. 2010](https://doi.org/10.1103/physreve.82.012301). Sand is irregular and does not roll, so that regime is not modelled.
+- Whether powder goes to antinodes depends on drive, and there is no single crossover size. The direction agrees with the simulation in 67 of 75 runs, with mean error ×1.6 and ×3.7 on the runs that go to antinodes.
+- With the air-drag cap on spread, a Faraday-style run (35 µm, 308 Hz, 100 g) ends with 37 % at the centre, 45 % at the rim and 17 % at the node. This is the lead's own check, against Faraday's description only.
+
+### GPU and CPU
+
+The same fixed field and the same 60× run on both engines give the same pattern by eye. The GPU engine's statistical test on a known field gives a settled width of 0.016 against about 0.014 from theory, with no grain leaving the plate.
+
+### Numerical bug found on the way
+
+The integral for I_n sums terms about e^(n²/2x) times larger than the answer. Raising the circle limit to λ = 120 exposed it as false modes: 7851 found, about 1970 expected. A power series now takes over, and 1873 modes result. A sample of 74 roots agrees with scipy to 9×10⁻¹³. The old limit of λ = 50 stayed below where it started, so earlier results were safe.
+
+### Calibration
+
+Fitting Shu's 25 resonances, from the stated plate with air, recovers a frequency scale of ×1.011 and a moving mass of 22 g, at 1.6 % RMS against 5.4 % by chance. The 12-pattern photo refits to ×1.009 and 7.0 g, at 1.28 % against 3.96 %. A preset's fit means little unless it beats chance.

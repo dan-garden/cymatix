@@ -34,19 +34,7 @@ export const elasticRectModes = (edges, nu, beta, nb) => {
   return rectCache.get(key);
 };
 
-/** Sweeps a configured plate; a resonance is a local maximum standing 20 % above the response 1 % either side. */
-export const sweepResonances = (plate, fStart, fEnd) => {
-  const response = [];
-  for (let f = fStart; f < fEnd; f *= 1.001) response.push([f, plate.field([{ f, F: 1 }], 9.81)]);
-  const resonances = [];
-  for (let i = 10; i + 10 < response.length; i++) {
-    const y = response[i][1];
-    const isPeak = y > response[i - 1][1] && y >= response[i + 1][1];
-    const standsOut = y > 1.2 * response[i - 10][1] && y > 1.2 * response[i + 10][1];
-    if (isPeak && standsOut) resonances.push(response[i][0]);
-  }
-  return resonances;
-};
+export { sweepResonances } from './calibrate.js';
 
 /** Waller (1938), via Leissa NASA SP-160 Table 2.9: measured radii on free brass plates, [n][s − 1], inside out. */
 export const WALLER_RADII = [

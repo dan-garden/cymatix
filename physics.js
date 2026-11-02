@@ -17,6 +17,24 @@ const range = n => [...Array(n).keys()];
 
 // ---------- circular plates ----------
 
+// The integral for I_n sums terms about e^(n²/2x) times larger than the answer, so past this point it has too few digits
+// left, and its rounding noise would look like extra modes. The power series has only positive terms, so it stays exact.
+const integralLosesDigits = (n, x) => n * n > 30 * Math.abs(x);
+
+// I_n(x) = (x/2)^n/n! · Σ_k (x²/4)^k / (k!·(n+1)_k)
+function besselISeries(n, x) {
+  const half = x / 2;
+  let term = 1;
+  for (let k = 1; k <= n; k++) term *= half / k;
+  const step = half * half;
+  let sum = term;
+  for (let k = 1; term > 1e-17 * Math.abs(sum); k++) {
+    term *= step / (k * (n + k));
+    sum += term;
+  }
+  return sum;
+}
+
 /** [J_n(x), J_n'(x), I_n(x), I_n'(x)] for integer n ≥ 0, from Bessel's integrals. */
 export function bessel(n, x) {
   // The trapezoid rule on these smooth periodic integrands converges exponentially (≈1e-15 here).
@@ -34,6 +52,10 @@ export function bessel(n, x) {
     Jp += w * s * Math.sin(phase);
     I += e;
     Ip += e * c;
+  }
+  if (x !== 0 && integralLosesDigits(n, x)) {
+    const In = besselISeries(n, x);
+    return [J / N, Jp / N, In, besselISeries(n + 1, x) + n / x * In];
   }
   return [J / N, Jp / N, I / N, Ip / N];
 }
@@ -73,12 +95,13 @@ function radialShape(n, lam, C) {
   });
   for (let j = 0; j < NR; j++) {
     const x = lam * j / (NR - 1);
+    const useSeries = integralLosesDigits(n, x);
     let J = 0, I = 0;
     for (const { sin, cos, nt, weight } of terms) {
       J += weight * Math.cos(nt - x * sin);
-      I += weight * Math.exp(x * cos) * Math.cos(nt);
+      if (!useSeries) I += weight * Math.exp(x * cos) * Math.cos(nt);
     }
-    R[j] = (J + C * I) / N;
+    R[j] = useSeries ? J / N + C * besselISeries(n, x) : (J + C * I) / N;
   }
   return R;
 }
@@ -177,7 +200,7 @@ export function circleModes(bc, nu, lamMax) {
 
 // ---------- rectangular plates ----------
 
-function gaussLegendre(n) { // nodes and weights on [0, 1]
+export function gaussLegendre(n) { // nodes and weights on [0, 1]
   const nodes = new Float64Array(n);
   const weights = new Float64Array(n);
   for (let i = 0; i < n; i++) {
@@ -201,11 +224,11 @@ function gaussLegendre(n) { // nodes and weights on [0, 1]
   return [nodes, weights];
 }
 
-const ORDER = { free: 0, simply: 1, clamped: 2 }; // vanishing order of w at an edge: none, w = 0, w = w' = 0
+export const ORDER = { free: 0, simply: 1, clamped: 2 }; // vanishing order of w at an edge: none, w = 0, w = w' = 0
 
 // Raw 1D Ritz basis on ξ ∈ [0,1]: shifted Legendre polynomials times ξ^p·(1−ξ)^q, which enforces the geometric
 // condition at each end (p, q from ORDER). Fills value, d/dξ, d²/dξ².
-function rawBasis(p, q, nb, xi, f, f1, f2) {
+export function rawBasis(p, q, nb, xi, f, f1, f2) {
   const t = 2 * xi - 1;
   const a = xi;
   const b = 1 - xi;
@@ -238,7 +261,7 @@ function rawBasis(p, q, nb, xi, f, f1, f2) {
 
 // 1D basis orthonormalised on [0,1] (Gram–Schmidt, twice for stability) with its stiffness integrals
 // E11 = ∫U_i'U_k', E22 = ∫U_i''U_k'', E20 = ∫U_i''U_k, and an evaluator at any ξ.
-function basis1D(p, q, nb) {
+export function basis1D(p, q, nb) {
   const nq = nb + 12;
   const [qx, qw] = gaussLegendre(nq);
   const integrate = (a, b) => {
@@ -434,7 +457,7 @@ function implicitQL(V, d, e, n) {
 }
 
 // Eigen-decomposition of a symmetric n×n matrix (JAMA, public domain). Eigenvectors are the columns of `vectors`.
-function symEig(A, n) {
+export function symEig(A, n) {
   const V = Float64Array.from(A);
   const d = new Float64Array(n);
   const e = new Float64Array(n);
@@ -444,19 +467,29 @@ function symEig(A, n) {
 }
 
 // Each symmetric axis splits its functions into even and odd ones, which the stiffness never couples.
-const parityClasses = (basis, n) => (basis.sym
+export const parityClasses = (basis, n) => (basis.sym
   ? [range(n).filter(i => i % 2 === 0), range(n).filter(i => i % 2 === 1)]
   : [range(n)]);
+
+// Basis size by the number of symmetric axes: each one halves the block size, so it affords a richer basis.
+const DEFAULT_BASIS = [22, 28, 36];
+const MAX_BASIS = [48, 68, 96]; // blocks of about 2300 unknowns: tens of seconds in worker threads
 
 /**
  * Rayleigh–Ritz modes of a rectangular plate with sides 1 (ξ) × beta (η). `edges` is one condition for all four
  * edges or [ξ = 0, ξ = 1, η = 0, η = 1], each 'free' | 'simply' | 'clamped'.
  */
 export function rectModes(edges, nu, beta, nb) {
+  const problem = rectProblem(edges, nu, beta, nb);
+  return assembleRectModes(problem, problem.blocks.map((_, block) => solveRectBlock(problem, block)));
+}
+
+// The basis and the independent parity blocks of a rectangle. Each block can be solved separately, even in another thread.
+function rectProblem(edges, nu, beta, nb) {
   const edgeList = typeof edges === 'string' ? [edges, edges, edges, edges] : edges;
   const [x0, x1, y0, y1] = edgeList.map(edge => ORDER[edge]);
   const symAxes = (x0 === x1) + (y0 === y1);
-  nb ??= [22, 28, 36][symAxes]; // each symmetric axis halves the block size, so it affords a richer basis
+  nb ??= DEFAULT_BASIS[symAxes];
 
   // The same number of functions per unit length on both sides: an elongated plate gets more along its long side
   // (b/a = 8 needs ~100 there for its first 15 modes), keeping nbx·nby ≈ nb².
@@ -465,44 +498,70 @@ export function rectModes(edges, nu, beta, nb) {
   const nby = Math.max(8, Math.round(nb * r));
   const X = basis1D(x0, x1, nbx);
   const Y = x0 === y0 && x1 === y1 && nbx === nby ? X : basis1D(y0, y1, nby);
+  const blocks = parityClasses(X, nbx).flatMap(I => parityClasses(Y, nby).map(J => ({ I, J })));
+  return { nu, beta, nbx, nby, X, Y, blocks };
+}
 
+function solveRectBlock({ nu, beta, X, Y, blocks }, block) {
+  const { I, J } = blocks[block];
   const b2 = beta * beta;
   const b4 = b2 * b2;
   const stiffness = (i, j, k, l) => (j === l ? X.E22[i][k] : 0) + (i === k ? Y.E22[j][l] / b4 : 0)
     + (nu * (X.E20[i][k] * Y.E20[l][j] + X.E20[k][i] * Y.E20[j][l]) + 2 * (1 - nu) * X.E11[i][k] * Y.E11[j][l]) / b2;
+  const pairs = I.flatMap(i => J.map(j => [i, j]));
+  const m = pairs.length;
+  const K = new Float64Array(m * m);
+  pairs.forEach(([i, j], a) => {
+    pairs.forEach(([k, l], b) => { K[a * m + b] = stiffness(i, j, k, l); });
+  });
+  return symEig(K, m);
+}
 
+function assembleRectModes({ nbx, nby, X, Y, blocks }, solutions) {
   const modes = [];
-  for (const I of parityClasses(X, nbx)) {
-    for (const J of parityClasses(Y, nby)) {
-      const pairs = I.flatMap(i => J.map(j => [i, j]));
-      const m = pairs.length;
-      const K = new Float64Array(m * m);
-      pairs.forEach(([i, j], a) => {
-        pairs.forEach(([k, l], b) => { K[a * m + b] = stiffness(i, j, k, l); });
+  solutions.forEach(({ values, vectors }, block) => {
+    const { I, J } = blocks[block];
+    const pairs = I.flatMap(i => J.map(j => [i, j]));
+    const m = pairs.length;
+    for (let e = 0; e < m; e++) {
+      modes.push({
+        L: Math.sqrt(Math.max(values[e], 0)),
+        solution: { pairs, vectors, m, e },
+        inv: 1,
+        Rmax: 1,
+        // parity about the plate's centre lines: 0 even, 1 odd, −1 none (that axis has unequal ends)
+        px: X.sym ? I[0] : -1,
+        py: Y.sym ? J[0] : -1,
       });
-      const { values, vectors } = symEig(K, m);
-      for (let e = 0; e < m; e++) {
-        const vec = new Float64Array(nbx * nby);
-        pairs.forEach(([i, j], a) => { vec[i * nby + j] = vectors[a * m + e]; });
-        modes.push({
-          L: Math.sqrt(Math.max(values[e], 0)),
-          vec,
-          inv: 1,
-          Rmax: 1,
-          // parity about the plate's centre lines: 0 even, 1 odd, −1 none (that axis has unequal ends)
-          px: X.sym ? I[0] : -1,
-          py: Y.sym ? J[0] : -1,
-        });
-      }
     }
-  }
+  });
   modes.sort(byFrequency);
 
   // shortcut: only the lowest ~nbx·nby/4 Ritz modes are converged; raise nb for denser high-frequency patterns.
   const kept = modes.slice(0, Math.round(nbx * nby / 4));
   let elastic = 0;
-  for (const mode of kept) mode.label = mode.L < 1e-3 ? 'rigid' : `#${++elastic}`;
+  for (const mode of kept) {
+    const { pairs, vectors, m, e } = mode.solution;
+    const vec = new Float64Array(nbx * nby);
+    pairs.forEach(([i, j], a) => { vec[i * nby + j] = vectors[a * m + e]; });
+    delete mode.solution;
+    mode.vec = vec;
+    mode.label = mode.L < 1e-3 ? 'rigid' : `#${++elastic}`;
+  }
   return { modes: kept, nbx, nby, atX: X.at, atY: Y.at };
+}
+
+/** How many parity blocks a rectangle splits into, for solving them in parallel with rectBlock. */
+export const rectBlockCount = (edges, nu, beta, nb) => rectProblem(edges, nu, beta, nb).blocks.length;
+
+/** Solves one parity block: the numbers a worker thread sends back to rectModesFromBlocks. */
+export function rectBlock(edges, nu, beta, nb, block) {
+  return solveRectBlock(rectProblem(edges, nu, beta, nb), block);
+}
+
+/** The same result as rectModes, from blocks solved elsewhere, in block order. */
+export function rectModesFromBlocks(edges, nu, beta, nb, solutions) {
+  return assembleRectModes(rectProblem(edges, nu, beta, nb), solutions);
 }
 
 /**
@@ -522,6 +581,32 @@ export function mindlinOmega(wK, { E, rho, nu, h }, kappa2 = Math.PI ** 2 / 12) 
   const b = S * I * k2 + rhoH * D * k2 + rhoH * S;
   const c = S * D * k2 * k2;
   return Math.sqrt(2 * c / (b + Math.sqrt(b * b - 4 * a * c))); // lower root, written to avoid cancellation
+}
+
+// ---------- how many modes a plate needs ----------
+
+const LAM_MAX_INLINE = 50; // above this λ a circular plate is worth solving in a worker thread
+const circleReach = (wScale, fmax) => Math.max(10, 5 * Math.ceil(Math.sqrt(1.3 * TAU * fmax / wScale) / 5));
+
+/** The λ a circular plate needs to reach 30 % past fmax, up to lamLimit. */
+export function circleLamFor(cfg, lamLimit = 120) {
+  const D = flexuralRigidity(cfg);
+  const wScale = Math.sqrt(D / (cfg.rho * cfg.h)) / (cfg.d / 2) ** 2;
+  return Math.min(lamLimit, circleReach(wScale, cfg.fmax));
+}
+
+/** The basis size a rectangle needs to reach 20 % past fmax, or null if the default basis already does. */
+export function rectBasisFor(cfg) {
+  const edges = cfg.edges ?? [cfg.bc, cfg.bc, cfg.bc, cfg.bc];
+  const [x0, x1, y0, y1] = edges.map(edge => ORDER[edge]);
+  const symAxes = (x0 === x1) + (y0 === y1);
+  const beta = cfg.Ly / cfg.Lx;
+  const D = flexuralRigidity(cfg);
+  const targetL = 1.2 * TAU * cfg.fmax * cfg.Lx ** 2 * Math.sqrt(cfg.rho * cfg.h / D);
+  // about β·Λ/(4π) modes lie below Λ (Weyl's law), and the solver keeps nb²/4 of them
+  const wanted = Math.ceil(2 * Math.sqrt(1.1 * beta * targetL / (4 * Math.PI)));
+  if (wanted <= DEFAULT_BASIS[symAxes]) return null;
+  return Math.min(wanted, MAX_BASIS[symAxes]);
 }
 
 // ---------- the driven plate ----------
@@ -545,17 +630,20 @@ export class Plate {
 
     const key = circle ? this.#loadCircleModes(cfg) : this.#loadRectModes(cfg);
 
-    const withThickness = w => (cfg.mindlin === false ? w : mindlinOmega(w, cfg));
-    for (const mode of this.modes) {
+    // solved.thick: those modes already include shear and rotary inertia
+    const withThickness = w => (cfg.mindlin === false || cfg.solved?.thick ? w : mindlinOmega(w, cfg));
+    for (const mode of this.solvedModes) {
       mode.w = withThickness(mode.L * this.wScale);
       mode.f = mode.w / TAU;
     }
-    const topL = circle ? this.lamMax ** 2 : this.modes.at(-1).L;
+    const topL = circle ? this.lamMax ** 2 : this.solvedModes.at(-1).L;
     this.fTop = withThickness(topL * this.wScale) / TAU;
 
     const longSide = Math.max(cfg.Lx, cfg.Ly);
     this.hx = circle ? 1 : cfg.Lx / longSide;
     this.hy = circle ? 1 : cfg.Ly / longSide;
+    // solvedModes are reused between configurations; a fluid or similar returns adjusted copies through cfg.adjustModes
+    this.modes = cfg.adjustModes?.(this.solvedModes) ?? this.solvedModes;
 
     if (key !== this.key || cfg.G !== this.G) {
       this.key = key;
@@ -564,21 +652,21 @@ export class Plate {
     this.setDrive(this.du ?? 0, this.dv ?? 0);
   }
 
-  #loadCircleModes({ bc, nu, fmax }) {
+  // cfg.solved carries modes solved elsewhere (a worker thread, a larger basis); without it they are solved here.
+  #loadCircleModes({ bc, nu, fmax, solved }) {
     // modes reach 30 % past the top analysed frequency; λ is rounded up so small edits reuse them
-    const reach = Math.sqrt(1.3 * TAU * fmax / this.wScale);
-    this.lamMax = Math.min(50, Math.max(10, 5 * Math.ceil(reach / 5)));
-    const key = `c|${bc}|${nu}|${this.lamMax}`;
-    if (key !== this.key) this.modes = circleModes(bc, nu, this.lamMax);
+    this.lamMax = solved?.lamMax ?? Math.min(LAM_MAX_INLINE, circleReach(this.wScale, fmax));
+    const key = `c|${bc}|${nu}|${this.lamMax}|${solved?.id ?? ''}`;
+    if (key !== this.key) this.solvedModes = solved?.modes ?? circleModes(bc, nu, this.lamMax);
     return key;
   }
 
-  #loadRectModes({ edges, bc, nu, Lx, Ly }) {
+  #loadRectModes({ edges, bc, nu, Lx, Ly, solved }) {
     this.edges = edges ?? [bc, bc, bc, bc];
-    const key = `r|${this.edges}|${nu}|${Ly / Lx}`;
+    const key = `r|${this.edges}|${nu}|${Ly / Lx}|${solved?.id ?? ''}`;
     if (key !== this.key) {
-      this.ritz = rectModes(this.edges, nu, Ly / Lx);
-      this.modes = this.ritz.modes;
+      this.ritz = solved?.ritz ?? rectModes(this.edges, nu, Ly / Lx);
+      this.solvedModes = this.ritz.modes;
     }
     return key;
   }
@@ -689,6 +777,7 @@ export class Plate {
     this.dv = v;
     if (this.circle) this.#driveCircle(u, v);
     else this.#driveRect(u, v);
+    this.patch?.setDrive(u, v);
   }
 
   #driveCircle(u, v) {
@@ -731,11 +820,17 @@ export class Plate {
    */
   field(peaks, g) {
     this.g2.fill(0);
+    this.driveCount = 0;
     for (const { f, F } of peaks) {
       const w = TAU * f;
-      const [gr, gi] = this.#solveCoefficients(w, F, g);
-      const [qr, qi] = this.#mountFactor(w, F, g, gr, gi);
-      if (qr !== 1 || qi !== 0) this.#scaleCoefficients(qr, qi);
+      this.#nextDrive(w);
+      if (this.patch) {
+        this.patch.coefficients(w, F, g, this.cr, this.ci);
+      } else {
+        const [gr, gi] = this.#solveCoefficients(w, F, g);
+        const [qr, qi] = this.#mountFactor(w, F, g, gr, gi);
+        if (qr !== 1 || qi !== 0) this.#scaleCoefficients(qr, qi);
+      }
       const tolerance = this.#strongestCoefficient() * 1e-3; // skip modes below 0.1 % of the strongest
       if (this.circle) this.#addCircleField(tolerance);
       else this.#addRectField(tolerance);
@@ -751,15 +846,48 @@ export class Plate {
     return max;
   }
 
+  // With keepDrives set, each drive's complex field is kept for deflections().
+  #nextDrive(omega) {
+    if (!this.keepDrives) return;
+    const cells = this.G * this.G;
+    const store = this.driveStore ??= [];
+    const drive = store[this.driveCount] ??= { omega, re: new Float32Array(cells), im: new Float32Array(cells) };
+    if (drive.re.length !== cells) {
+      drive.re = new Float32Array(cells);
+      drive.im = new Float32Array(cells);
+    } else {
+      drive.re.fill(0);
+      drive.im.fill(0);
+    }
+    drive.omega = omega;
+    this.currentDrive = drive;
+    this.driveCount++;
+  }
+
+  /** Each drive's complex deflection in metres from the last field() call, for a force multiplied by `gain`. */
+  deflections(gain, g) {
+    const drives = (this.driveStore ?? []).slice(0, this.driveCount);
+    for (const { omega, re, im } of drives) {
+      const scale = gain * g / (omega * omega);
+      for (let q = 0; q < re.length; q++) {
+        re[q] *= scale;
+        im[q] *= scale;
+      }
+    }
+    return drives;
+  }
+
   // Sets the modal coefficients cr + i·ci for a point force and returns the response [re, im] at the driver.
   #solveCoefficients(w, F, g) {
-    const { cr, ci, modes, zeta, mass } = this;
+    const { cr, ci, modes, zeta, mass, detune } = this;
     const scale = w * w * F / (mass * g);
+    const forcePerMass = F / mass;
     let gr = 0, gi = 0;
     modes.forEach((mode, k) => {
       const wk = mode.w;
-      const a = wk * wk - w * w;
-      const b = 2 * zeta * wk * w;
+      let a = wk * wk - w * w;
+      const b = 2 * (mode.zeta ?? zeta) * wk * w;
+      if (detune) a += detune(k, this.driveCount, a, b, forcePerMass * Math.abs(mode.d0) * mode.inv);
       const amplitude = scale * mode.d0 * mode.inv / (a * a + b * b);
       cr[k] = amplitude * a;
       ci[k] = -amplitude * b;
@@ -808,6 +936,7 @@ export class Plate {
 
   #addCircleField(tolerance) {
     const { modes, Gre, Gim, act, cr, ci, cells, rIdx, cosD, g2 } = this;
+    const drive = this.keepDrives ? this.currentDrive : null;
     Gre.fill(0);
     Gim.fill(0);
     act.fill(0);
@@ -839,11 +968,16 @@ export class Plate {
         cosine = next;
       }
       g2[cells[q]] += wr * wr + wi * wi;
+      if (drive) {
+        drive.re[cells[q]] = wr;
+        drive.im[cells[q]] = wi;
+      }
     }
   }
 
   #addRectField(tolerance) {
     const { modes, cr, ci, Bre, Bim, Tre, Tim, Xg, Yg, rows, cols, g2, G } = this;
+    const drive = this.keepDrives ? this.currentDrive : null;
     const { nbx, nby } = this.ritz;
     const nn = nbx * nby;
     Bre.fill(0);
@@ -874,6 +1008,10 @@ export class Plate {
           wi += x * Tim[a * G + j];
         }
         g2[j * G + i] += wr * wr + wi * wi;
+        if (drive) {
+          drive.re[j * G + i] = wr;
+          drive.im[j * G + i] = wi;
+        }
       }
     }
   }

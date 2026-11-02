@@ -1,4 +1,12 @@
-import { DRIVER_LIMIT, Plate, clamp, findPeaks, nodalRadii } from './physics.js';
+import { DRIVER_LIMIT, clamp, findPeaks } from './physics.js';
+import { PlateModel, stiffeningRegime } from './plateModel.js';
+import { AIR, VACUUM, WATER } from './fluid.js';
+import { mindlinNodalRadii } from './mindlin.js';
+import { AIR as GRAIN_AIR, SPECIES, cellCapacity, grainMass, newFields, stepGrains, transportFields, updateCrowding } from './grains.js';
+import { createSandGL } from './sandGL.js';
+import { runPlan, solvePlan } from './solvePlan.js';
+import { MATERIALS } from './materials.js';
+import { cancelGroup, runInGroup, runTask } from './solverPool.js';
 
 // ---------- helpers ----------
 
@@ -53,15 +61,11 @@ form.addEventListener('input', e => {
 
 // ---------- plate ----------
 
-const MATERIALS = { // E (GPa), ρ (kg/m³), ν
-  aluminum: [69, 2700, 0.33],
-  steel: [200, 7850, 0.29],
-  brass: [100, 8500, 0.34],
-  glass: [70, 2500, 0.22],
-  acrylic: [3.2, 1180, 0.37],
-};
-const plate = new Plate();
+const FLUIDS = { air: AIR, vacuum: VACUUM, water: WATER };
+const plate = new PlateModel();
+plate.keepDrives = true;
 let rebuildTimer = 0;
+let activeConfig = null; // the last valid plate settings
 
 function plateConfig() {
   const config = {
@@ -81,6 +85,10 @@ function plateConfig() {
     mount: $('mount').value,
     ma: num('ma') / 1000,
     mindlin: $('mindlin').checked,
+    fluid: FLUIDS[$('fluid').value],
+    clampRadius: num('clamp') / 1000,
+    stiffening: $('stiffening').checked,
+    modalZeta: modalDampingFor(),
   };
   const { E, rho, nu, fmax, ma } = config;
   return E > 0 && rho > 0 && nu >= 0 && nu < 0.5 && fmax > 0 && ma >= 0 ? config : null;
@@ -95,16 +103,69 @@ function rebuildNow() {
     showStatus("Check the inputs: modulus and density must be positive, Poisson's ratio in [0, 0.5), moving mass ≥ 0.", true);
     return;
   }
+  activeConfig = config;
   const startedAt = performance.now();
   const previousGeometry = plateGeometry();
   document.body.dataset.shape = config.shape;
   document.body.dataset.mount = config.mount;
   $('forceUnit').textContent = config.mount === 'rigid' ? 'g' : 'N';
-  plate.configure(config);
+  requestPhysicalDamping(config);
+  const plan = solvePlan(config);
+  const solved = plan && solvedPlates.get(plan.id);
+  if (!plan || solved) {
+    cancelGroup('plate');
+    activeSolveId = null;
+  }
+  plate.configure({ ...config, solved });
+  if (plan && !solved) startSolve(plan);
   applyDriver();
   if (previousGeometry !== plateGeometry()) scatterSand();
   buildBase();
   listModes(performance.now() - startedAt);
+}
+
+// ---------- physical damping, worked out in a worker thread ----------
+
+let dampingCache = { key: null, zetas: null };
+
+const dampingKey = ({ shape, bc, edges, E, rho, nu, h, d, Lx, Ly, fmax, fluid }) =>
+  JSON.stringify([shape, bc, edges, E, rho, nu, h, d, Lx, Ly, fmax, fluid.rho]);
+
+function modalDampingFor() {
+  return $('dampingModel').value === 'physical' ? dampingCache.zetas : null;
+}
+
+function requestPhysicalDamping(config) {
+  if ($('dampingModel').value !== 'physical') return;
+  const key = dampingKey(config);
+  if (dampingCache.key === key) return;
+  dampingCache = { key, zetas: null };
+  const { modalZeta, ...request } = config;
+  runTask('physicalDamping', request).then(zetas => {
+    if (dampingCache.key !== key) return; // the plate changed while this was solving
+    dampingCache.zetas = zetas;
+    rebuildNow();
+  });
+}
+
+// ---------- better and larger solves in worker threads ----------
+
+const solvedPlates = new Map(); // the last few, so moving a slider back is instant
+const SOLVED_KEPT = 3;
+let activeSolveId = null;
+
+const runPlateSolve = (task, ...args) => runInGroup('plate', task, ...args);
+
+async function startSolve(plan) {
+  if (activeSolveId === plan.id) return;
+  cancelGroup('plate'); // a solve for a plate that has since changed only holds the threads up
+  activeSolveId = plan.id;
+  const solved = await runPlan(plan, runPlateSolve);
+  solvedPlates.set(plan.id, solved);
+  if (solvedPlates.size > SOLVED_KEPT) solvedPlates.delete(solvedPlates.keys().next().value);
+  if (activeSolveId !== plan.id) return; // the plate changed again while this one solved
+  activeSolveId = null;
+  rebuildNow();
 }
 
 function scheduleRebuild() {
@@ -114,7 +175,7 @@ function scheduleRebuild() {
 }
 
 const nodalTooltip = mode => {
-  const radii = nodalRadii(mode).map(r => r.toFixed(4)).join(', ') || 'none';
+  const radii = mindlinNodalRadii(mode).map(r => r.toFixed(4)).join(', ') || 'none';
   return `${mode.f.toFixed(2)} Hz · nodal circles at r/a = ${radii}`;
 };
 
@@ -135,18 +196,77 @@ function listModes(solveMs) {
   // Mindlin's correction is exact for simply supported edges; for free/clamped ones it is within ~1–5 % at h/L = 0.1
   const span = config.shape === 'circle' ? config.d : Math.min(config.Lx, config.Ly);
   const tooThick = config.bc !== 'simply' && config.h / span > 0.05;
-  const shortNote = tooShort ? ' — below "Highest"; a thicker or smaller plate covers more' : '';
-  const thickNote = tooThick ? ' · thick plate: free/clamped frequencies carry a few % model error' : '';
+  const shortNote = !tooShort ? ''
+    : activeSolveId ? ' — solving more modes to reach "Highest"…'
+    : ' — below "Highest"; a thicker or smaller plate covers more';
+  const thickNote = tooThick && !plate.solvedModes[0]?.B ? ' · thick plate: solving true Mindlin modes…' : '';
+  const waterNote = $('fluid').value === 'water' ? ' · sand transport is modelled in air only' : '';
   showStatus(
-    `${plate.modes.length} modes, valid to ${fmtHz(plate.fTop)}${shortNote}${thickNote} · solved in ${solveMs.toFixed(0)} ms`,
-    tooShort || tooThick,
+    `${plate.modes.length} modes, valid to ${fmtHz(plate.fTop)}${shortNote}${thickNote}${waterNote} · solved in ${solveMs.toFixed(0)} ms`,
+    tooShort,
   );
+}
+
+function showMaterialSource() {
+  const material = MATERIALS[$('material').value];
+  const hint = $('materialSource');
+  hint.replaceChildren();
+  if (!material) return;
+  const link = document.createElement('a');
+  link.href = material.url;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.textContent = material.source;
+  hint.append('Values from ', link, '. A real sheet can differ by a few percent.');
 }
 
 function applyDriver() {
   const r = num('dr');
   const angle = num('da') * Math.PI / 180;
   plate.setDrive(r * Math.cos(angle), r * Math.sin(angle));
+}
+
+// ---------- calibration ----------
+
+let lastFit = null;
+
+const measuredFrequencies = () => $('measured').value
+  .split(/[\s,;]+/)
+  .map(Number)
+  .filter(f => f > 0);
+
+async function fitToMeasurements() {
+  const measured = measuredFrequencies();
+  const config = plateConfig();
+  lastFit = null;
+  $('applyFit').hidden = true;
+  if (measured.length < 2 || !config) {
+    $('fitResult').textContent = 'Enter at least two frequencies, and check the plate inputs.';
+    return;
+  }
+  $('fit').disabled = true;
+  $('fitResult').textContent = 'Fitting…';
+  const fit = await runTask('fitPlate', measured, config);
+  $('fit').disabled = false;
+  if (!fit) {
+    $('fitResult').textContent = 'No fit: the model has no resonances in that range.';
+    return;
+  }
+  lastFit = fit;
+  $('applyFit').hidden = false;
+  const massNote = config.mount === 'shaker' ? `, moving mass ${(fit.ma * 1000).toFixed(1)} g` : '';
+  const verdict = fit.chance > 2 * fit.rms ? 'well above chance' : 'not clearly better than chance, so treat this with caution';
+  $('fitResult').textContent = `Frequency scale ×${fit.scale.toFixed(3)}${massNote}. Error ${(100 * fit.rms).toFixed(1)} % RMS `
+    + `against ${(100 * fit.chance).toFixed(1)} % for a wrong model: ${verdict}.`;
+}
+
+function applyFit() {
+  if (!lastFit) return;
+  $('E').value = +(lastFit.E / 1e9).toPrecision(4);
+  $('ma').value = +(lastFit.ma * 1000).toPrecision(4);
+  $('material').value = 'custom';
+  showMaterialSource();
+  rebuildNow();
 }
 
 // ---------- audio ----------
@@ -314,6 +434,7 @@ function scatterSand() {
     grainX[p] = u;
     grainY[p] = v;
   }
+  sandGL?.setGrains(grainX, grainY);
 }
 
 // Bilinear interpolation on a G×G grid at continuous grid coordinates, which must already be clamped to the grid.
@@ -328,61 +449,70 @@ const bilinear = (values, G, fx, fy) => {
 };
 const gridEnd = G => G - 1.001; // largest coordinate that still has a cell to its right and below
 
-const scatterNoise = () => Math.random() + Math.random() + Math.random() - 1.5;
-const reflectInside = (x, limit) => {
-  if (x > limit) x = 2 * limit - x;
-  else if (x < -limit) x = -2 * limit - x;
-  return clamp(x, -limit, limit);
-};
+// Grains move by the drift and diffusivity calculated from the plate's motion in grains.js, in real units. Each step here
+// covers no more simulated time than this, so that a fast time-lapse does not jump across the grid.
+const MAX_SIM_STEP = 0.05;
+const MAX_STEPS_PER_FRAME = { gpu: 16, cpu: 4 };
+const sandRandom = Uint32Array.of(12345);
+let transport = null;
+let gpuFields = null;
 
-// Grains hop only where the plate's acceleration exceeds gravity (Γ > 1). Each hop drifts down the gradient of Γ with a
-// random scatter, so sand drains from antinodes and collects where the plate is quiet: the nodal lines.
-// shortcut: grain transport is this phenomenological model, not ballistic per-cycle flight; the plate field itself is exact.
-function stepSand(dt) {
-  const { G, gamma, circle } = plate;
-  const cellsPerUnit = G / 2;
-  const end = gridEnd(G);
-  const step = 1.5 / cellsPerUnit;
-  const mobility = num('mob') * dt;
-  const jitter = num('jit');
-  const hx = plate.hx * 0.995;
-  const hy = plate.hy * 0.995;
-  const gammaAt = (x, y) => {
-    const fx = clamp((x + 1) * cellsPerUnit - 0.5, 0, end);
-    const fy = clamp((y + 1) * cellsPerUnit - 0.5, 0, end);
-    return bilinear(gamma, G, fx, fy);
-  };
-  for (let p = 0; p < grainCount; p++) {
-    let x = grainX[p], y = grainY[p];
-    const here = gammaAt(x, y);
-    if (here <= 1) continue;
-    const excess = Math.min(here - 1, 4);
-    const gradX = gammaAt(x + step, y) - gammaAt(x - step, y);
-    const gradY = gammaAt(x, y + step) - gammaAt(x, y - step);
-    const drift = mobility * excess / (Math.hypot(gradX, gradY) + 1e-9);
-    const kick = 2 * jitter * Math.sqrt(excess * dt);
-    x += -gradX * drift + kick * scatterNoise();
-    y += -gradY * drift + kick * scatterNoise();
-    if (circle) {
-      const r = Math.hypot(x, y);
-      if (r > 0.995) {
-        const shrink = Math.max(0, 1.99 - r) / r;
-        x *= shrink;
-        y *= shrink;
-      }
-    } else {
-      x = reflectInside(x, hx);
-      y = reflectInside(y, hy);
-    }
-    grainX[p] = x;
-    grainY[p] = y;
+const grainSpecies = () => SPECIES[$('grainType').value];
+
+function updateTransport() {
+  const { G } = plate;
+  if (transport?.ux.length !== G * G) {
+    transport = newFields(G);
+    gpuFields = new Float32Array(G * G * 4);
+  }
+  const { h, E, rho, nu, d, Lx, Ly } = activeConfig;
+  const unit = plate.circle ? d / 2 : Math.max(Lx, Ly) / 2; // metres per plate unit
+  transportFields({
+    G,
+    drives: plate.deflections(gain, num('g')),
+    plate: { h, unit, E, rho, nu },
+    grain: grainSpecies(),
+    fluid: $('fluid').value === 'vacuum' ? null : GRAIN_AIR,
+    g: num('g'),
+    edge: plate.edge,
+  }, transport);
+}
+
+function uploadFields() {
+  const { ux, uy, D, level } = transport;
+  const { gamma } = plate;
+  for (let q = 0, o = 0; q < gamma.length; q++, o += 4) {
+    gpuFields[o] = ux[q];
+    gpuFields[o + 1] = uy[q];
+    gpuFields[o + 2] = D[q];
+    gpuFields[o + 3] = level[q];
+  }
+  sandGL.setFields(plate.G, gpuFields, gamma);
+}
+
+function moveSand(dt) {
+  const simTime = dt * num('timeLapse');
+  const limit = sandGL ? MAX_STEPS_PER_FRAME.gpu : MAX_STEPS_PER_FRAME.cpu;
+  const steps = clamp(Math.ceil(simTime / MAX_SIM_STEP), 1, limit);
+  const { circle, hx, hy, G } = plate;
+  const { d, Lx, Ly } = activeConfig;
+  const unit = circle ? d / 2 : Math.max(Lx, Ly) / 2;
+  const capacity = cellCapacity(grainSpecies(), G, unit);
+  if (sandGL) sandGL.updateCrowding(grainCount, capacity);
+  else updateCrowding(grainX, grainY, grainCount, transport, G, capacity);
+  for (let i = 0; i < steps; i++) {
+    if (sandGL) sandGL.step(simTime / steps, { circle, hx, hy });
+    else stepGrains(grainX, grainY, grainCount, transport, G, hx, hy, circle, simTime / steps, sandRandom);
   }
 }
 
 // ---------- plate rendering ----------
 
 const plateCanvas = $('plate');
-const plateCtx = plateCanvas.getContext('2d');
+const sandGL = new URLSearchParams(location.search).has('cpu') ? null : createSandGL(plateCanvas);
+const plateCtx = sandGL ? null : plateCanvas.getContext('2d');
+const marksCanvas = $('plateMarks');
+const marksCtx = marksCanvas.getContext('2d');
 const BLACK = [0, 0, 0];
 const WHITE = [255, 255, 255];
 const hexToRgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
@@ -402,13 +532,19 @@ function resize() {
   const box = $('stage').getBoundingClientRect();
   const cssSize = Math.max(120, Math.floor(Math.min(box.width, box.height) - 20));
   size = Math.min(1400, Math.round(cssSize * devicePixelRatio));
-  plateCanvas.width = size;
-  plateCanvas.height = size;
-  plateCanvas.style.width = `${cssSize}px`;
-  plateCanvas.style.height = `${cssSize}px`;
-  image = plateCtx.createImageData(size, size);
-  pixels = new Uint32Array(image.data.buffer);
-  grainDensity = new Uint8Array(size * size);
+  for (const canvas of [plateCanvas, marksCanvas]) {
+    canvas.width = size;
+    canvas.height = size;
+    canvas.style.width = `${cssSize}px`;
+    canvas.style.height = `${cssSize}px`;
+  }
+  if (sandGL) {
+    sandGL.resize(size);
+  } else {
+    image = plateCtx.createImageData(size, size);
+    pixels = new Uint32Array(image.data.buffer);
+    grainDensity = new Uint8Array(size * size);
+  }
   buildBase();
 }
 
@@ -440,11 +576,19 @@ function buildBase() {
     const covered = mixRgb(plateColor, sandColor, 1 - 0.55 ** density);
     return packRgba(mixRgb(covered, WHITE, Math.max(0, density - 6) / 80));
   });
+  if (sandGL) {
+    // the shader reads alpha as "this pixel is on the plate"
+    sandGL.setBase(basePixels.map((pixel, k) => (onPlate[k] ? pixel : pixel & 0x00ffffff)));
+    sandGL.setSandColors(sandColors);
+    sandGL.setMapColors(GAMMA_COLORS);
+  }
 }
+
+const grainPixels = () => Math.max(1, Math.round(num('grain') * size / 600)); // scales with the plate, not the screen
 
 function countGrains(half) {
   grainDensity.fill(0);
-  const grainSize = Math.max(1, Math.round(num('grain') * size / 600)); // scales with the plate, not the screen
+  const grainSize = grainPixels();
   const limit = size - grainSize;
   for (let p = 0; p < grainCount; p++) {
     const x = Math.min(limit, ((grainX[p] + 1) * half) | 0);
@@ -493,27 +637,32 @@ function drawSupports(half) {
   edgeLines.forEach((line, i) => {
     const edge = plate.edges[i];
     if (edge === 'free') return;
-    plateCtx.strokeStyle = '#9aa3ad';
-    plateCtx.lineWidth = (edge === 'clamped' ? 5 : 2) * dpr;
-    plateCtx.setLineDash(edge === 'simply' ? [6 * dpr, 5 * dpr] : []);
-    strokeLine(plateCtx, ...line);
+    marksCtx.strokeStyle = '#9aa3ad';
+    marksCtx.lineWidth = (edge === 'clamped' ? 5 : 2) * dpr;
+    marksCtx.setLineDash(edge === 'simply' ? [6 * dpr, 5 * dpr] : []);
+    strokeLine(marksCtx, ...line);
   });
-  plateCtx.setLineDash([]);
+  marksCtx.setLineDash([]);
 }
 
 function drawDriver(half) {
   const dpr = devicePixelRatio;
-  plateCtx.strokeStyle = '#ff6b5a';
-  plateCtx.lineWidth = 2 * dpr;
-  plateCtx.beginPath();
-  plateCtx.arc((plate.du + 1) * half, (plate.dv + 1) * half, 6 * dpr, 0, 2 * Math.PI);
-  plateCtx.stroke();
+  marksCtx.strokeStyle = '#ff6b5a';
+  marksCtx.lineWidth = 2 * dpr;
+  marksCtx.beginPath();
+  marksCtx.arc((plate.du + 1) * half, (plate.dv + 1) * half, 6 * dpr, 0, 2 * Math.PI);
+  marksCtx.stroke();
 }
 
 function renderPlate() {
   const half = size / 2;
-  countGrains(half);
-  paintPixels();
+  if (sandGL) {
+    sandGL.draw(grainCount, { grainSize: grainPixels(), showMap: $('overlay').checked, mapTop: Math.max(2, peakGamma) });
+  } else {
+    countGrains(half);
+    paintPixels();
+  }
+  marksCtx.clearRect(0, 0, size, size);
   if (!plate.circle) drawSupports(half);
   if ($('showDrive').checked) drawDriver(half);
 }
@@ -601,6 +750,50 @@ const nearestMode = f => plate.modes.reduce(
   null,
 );
 
+// Stiffening depends on absolute amplitude, so its coefficients are only worked out once a drive is strong enough.
+let kappasRequestedFor = null;
+
+function prepareStiffeningIfNeeded() {
+  if (!plate.stiffeningOn || plate.hasKappas || !peaks.length) return;
+  const omega = 2 * Math.PI * peaks[0].f;
+  if (stiffeningRegime(peakGamma * num('g'), omega, plate.h, num('zeta')) === 'negligible') return;
+  const config = activeConfig;
+  if (plate.circle) {
+    plate.prepareStiffening(config);
+    return;
+  }
+  if (plate.ritz.modes !== plate.solvedModes || kappasRequestedFor === plate.solvedModes) return;
+  kappasRequestedFor = plate.solvedModes;
+  const asked = plate.solvedModes;
+  // default basis only, so a worker thread's modes line up with these
+  if (solvePlan(config)) return;
+  runTask('rectKappasDefault', config.edges, config.nu, config.Ly / config.Lx).then(kappas => {
+    if (plate.solvedModes === asked) plate.setKappas(kappas);
+  });
+}
+
+const STIFFENING_NOTES = {
+  corrected: '  stiffening included',
+  caution: '  ⚠ stiffening beyond its tested range',
+  broken: '  ⚠ one-mode stiffening has broken down',
+};
+
+function stiffeningNote(a, omega) {
+  const state = stiffeningRegime(a, omega, plate.h, num('zeta'));
+  if (state === 'negligible') return '';
+  if (state === 'corrected' && !plate.detune) return '  ⚠ stiffening not modelled on this mount';
+  return STIFFENING_NOTES[state];
+}
+
+// Heaping and Faraday waves in a deep vibrated layer (Melo et al. 1995): Γ above about 2.2, more than two grains deep,
+// up to about 110 Hz. This simulation has no grain contact, so it says so.
+function layerNote(frequency) {
+  const species = grainSpecies();
+  const area = plate.circle ? Math.PI * (num('d') / 200) ** 2 : (num('lx') / 100) * (num('ly') / 100);
+  const layersDeep = grainCount * Math.PI * (species.D / 2) ** 2 / area;
+  return peakGamma > 2.2 && frequency < 110 && layersDeep > 2 ? '⚠ deep layer at low frequency: granular waves are not modelled' : '';
+}
+
 function updateReadout() {
   const lines = [];
   const strongest = peaks[0];
@@ -617,12 +810,14 @@ function updateReadout() {
   if (strongest) { // amplitude = a/ω² at the strongest peak; linear plate theory needs it well below the thickness
     const amplitude = peakGamma * num('g') / (2 * Math.PI * strongest.f) ** 2;
     const ratio = amplitude / (num('h') / 1000);
-    const warning = ratio > 0.2 ? '  ⚠ beyond linear theory' : '';
-    lines.push(`peak deflection ≈ ${(amplitude * 1e6).toPrecision(3)} µm = ${(100 * ratio).toFixed(1)} % of thickness${warning}`);
+    const omega = 2 * Math.PI * strongest.f;
+    lines.push(`peak deflection ≈ ${(amplitude * 1e6).toPrecision(3)} µm = ${(100 * ratio).toFixed(1)} % of thickness${stiffeningNote(peakGamma * num('g'), omega)}`);
+    const note = layerNote(strongest.f);
+    if (note) lines.push(note);
   }
   lines.push(
     `drive ${gain.toPrecision(3)} ${plate.mount === 'rigid' ? 'g' : 'N'} at 0 dBFS`,
-    `field ${fieldMs.toFixed(1)} ms · ${grainCount / 1000}k grains`,
+    `field ${fieldMs.toFixed(1)} ms · ${grainCount / 1000}k grains ≈ ${(grainCount * grainMass(grainSpecies()) * 1000).toPrecision(2)} g · ${sandGL ? 'GPU' : 'CPU'} · time ×${num('timeLapse')}`,
   );
   $('readout').textContent = lines.join('\n');
 }
@@ -665,10 +860,14 @@ function frame(now) {
   fieldMs += (performance.now() - fieldStartedAt - fieldMs) * 0.05;
 
   updateGain(unitPeak, dt);
+  plate.forceGain = gain;
   for (let i = 0; i < plate.gamma.length; i++) plate.gamma[i] *= gain; // Γ is linear in the force
   peakGamma = unitPeak * gain;
 
-  if (!paused) stepSand(dt);
+  updateTransport();
+  if (sandGL) uploadFields();
+  if (!paused) moveSand(dt);
+  prepareStiffeningIfNeeded();
   renderPlate();
   drawSpectrum();
   if (++frameCount % 6 === 0) updateReadout();
@@ -683,23 +882,35 @@ const setAllEdges = value => {
 };
 
 listen(
-  ['shape', 'bc', 'E', 'rho', 'nu', 'd', 'lx', 'ly', 'h', 'zeta', 'res', 'fmax', 'mount', 'ma', 'mindlin', 'eL', 'eR', 'eT', 'eB'],
+  ['shape', 'bc', 'E', 'rho', 'nu', 'd', 'lx', 'ly', 'h', 'zeta', 'res', 'fmax', 'mount', 'ma', 'mindlin', 'eL', 'eR', 'eT', 'eB', 'fluid', 'clamp', 'stiffening', 'dampingModel'],
   'input',
   scheduleRebuild,
 );
 for (const select of edgeSelects) select.innerHTML = $('bc').innerHTML;
 setAllEdges($('bc').value);
 listen('bc', 'input', () => setAllEdges($('bc').value)); // "Edge" sets all four
-listen(['E', 'rho', 'nu'], 'input', () => { $('material').value = 'custom'; });
+listen(['E', 'rho', 'nu'], 'input', () => {
+  $('material').value = 'custom';
+  showMaterialSource();
+});
 listen('material', 'input', () => {
   const material = MATERIALS[$('material').value];
-  if (material) [$('E').value, $('rho').value, $('nu').value] = material;
+  if (material) {
+    $('E').value = material.E;
+    $('rho').value = material.rho;
+    $('nu').value = material.nu;
+  }
+  showMaterialSource();
   scheduleRebuild();
 });
 listen(['dr', 'da'], 'input', applyDriver);
 listen(['sandCol', 'plateCol', 'bg'], 'input', buildBase);
 listen('grains', 'change', scatterSand);
 listen('resprinkle', 'click', scatterSand);
+$('grainType').replaceChildren(...Object.entries(SPECIES).map(([key, { name }]) => new Option(name, key)));
+form.reset(); // the grain list only now exists, so its default can be restored
+listen('fit', 'click', fitToMeasurements);
+listen('applyFit', 'click', applyFit);
 listen('pause', 'click', () => {
   paused = !paused;
   $('pause').textContent = paused ? 'Resume' : 'Pause';
@@ -741,7 +952,8 @@ const PRESETS = [
   {
     name: 'Shu et al. 1247 Hz',
     note: 'bolted square, as photographed',
-    set: { shape: 'rect', mount: 'shaker', ma: 20, E: 70, lx: 32, ly: 32, fmax: 5000, target: 15 },
+    // moving mass fitted to their 25 resonances with air included (1.9 % RMS); without air the same fit gives 20 g
+    set: { shape: 'rect', mount: 'shaker', ma: 15, E: 70, lx: 32, ly: 32, fmax: 5000, target: 15 },
     f: 1247,
   },
   // fitted to a widely shared 12-pattern photo (345–5907 Hz): only h/L² and the mass ratio are determined, ±1 %
@@ -770,6 +982,13 @@ const PRESETS = [
     f: 220,
     wave: 'square',
   },
+  // Faraday 1831: under strong drive, fine powder is carried by air to the antinodes, the opposite of sand
+  {
+    name: 'Faraday powder',
+    note: 'lycopodium gathers at antinodes',
+    set: { grainType: 'lycopodium', h: 2, target: 100 },
+    mode: '(0,1)',
+  },
   {
     name: 'Grid of cells',
     note: 'simply supported 2:1 rectangle',
@@ -780,6 +999,7 @@ const PRESETS = [
 
 function syncForm() { // derived state after the whole form changed (page load, reset, preset)
   updateRangeOutputs();
+  showMaterialSource();
   rebuildNow();
   setTone(num('toneHz'));
   applyWaveform();
@@ -816,6 +1036,7 @@ listen('resetAll', 'click', () => {
   useSource(null);
 });
 
+if (sandGL) $('grains').max = 3000000;
 syncForm();
 resize();
 requestAnimationFrame(frame);
