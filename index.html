@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cymatix</title>
+<style>
+  :root { --bg: #0b0c0e; --panel: #14161a; --line: #2a2e35; --text: #d9dce1; --dim: #8b919b; --accent: #e8e0a0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: grid; grid-template-columns: 1fr 340px; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, sans-serif; }
+  main { display: flex; flex-direction: column; min-width: 0; }
+  #stage { flex: 1; min-height: 0; position: relative; display: grid; place-items: center; }
+  #plate { cursor: crosshair; }
+  #readout { position: absolute; top: 10px; left: 12px; margin: 0; font: 12px/1.5 ui-monospace, monospace; color: var(--dim); pointer-events: none; white-space: pre; background: #0b0c0eb3; padding: 6px 8px; border-radius: 6px; }
+  #spectrum { width: 100%; height: 150px; border-top: 1px solid var(--line); }
+  aside { overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 12px; }
+  h1 { font-size: 16px; margin: 0 0 10px; color: var(--accent); letter-spacing: .04em; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 10px; padding: 6px 10px 8px; }
+  legend { color: var(--accent); padding: 0 4px; }
+  label { display: grid; grid-template-columns: 112px 1fr auto; align-items: center; gap: 6px; margin: 5px 0; }
+  label > :nth-child(2) { width: 100%; min-width: 0; }
+  output, .unit { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 38px; text-align: right; }
+  input[type=number], select { background: #0f1114; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
+  input[type=color] { height: 24px; border: 1px solid var(--line); background: none; padding: 0; }
+  input[type=checkbox] { justify-self: start; width: auto; }
+  button, .btn { background: #22262c; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; cursor: pointer; font: inherit; }
+  button:hover, .btn:hover { border-color: var(--accent); }
+  button.on { background: var(--accent); color: #111; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+  .row .btn { display: inline-block; margin: 0; }
+  audio { width: 100%; height: 32px; margin: 4px 0; }
+  .hint, #status { color: var(--dim); font-size: 12px; margin: 4px 0; }
+  #status.warn { color: #f0a868; }
+  #modes { display: flex; flex-wrap: wrap; gap: 4px; max-height: 180px; overflow-y: auto; }
+  #modes button { padding: 2px 6px; font-size: 11px; }
+  body[data-shape=circle] .rect, body[data-shape=rect] .circ, body:not([data-mount=shaker]) .shaker { display: none; }
+  body:not([data-source=file]) .src-file, body:not([data-source=tone]) .src-tone, body:not([data-source=mic]) .src-mic,
+  body:not([data-source=none]) .src-none, body[data-source=mic] .not-mic { display: none; }
+  .head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; }
+  .head h1 { margin: 0; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 4px 0 8px; }
+  .src-mic { display: flex; align-items: center; gap: 8px; padding: 8px; margin: 4px 0; border: 1px solid #a33; border-radius: 6px; background: #2a1414; }
+  .src-mic span { flex: 1; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #ff4d4d; animation: pulse 0.9s infinite alternate; }
+  @keyframes pulse { to { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+  .presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .presets button { text-align: left; line-height: 1.25; }
+  .presets small { display: block; color: var(--dim); font-size: 11px; }
+  details summary { cursor: pointer; color: var(--dim); margin: 6px 0; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  @media (max-width: 820px) {
+    body { grid-template-columns: 1fr; height: auto; }
+    #stage { flex: none; height: min(100vw, 80vh); }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body data-shape="circle" data-source="none">
+<main>
+  <div id="stage">
+    <canvas id="plate" aria-label="Simulated vibrating plate covered in sand. Click to move the driver."></canvas>
+    <pre id="readout"></pre>
+  </div>
+  <canvas id="spectrum" aria-label="Spectrum with detected peaks and the plate's eigenfrequencies"></canvas>
+</main>
+
+<aside>
+<form id="controls" autocomplete="off">
+  <div class="head"><h1>CYMATIX</h1><button id="resetAll" type="button" title="Every setting back to its default, sound off">Reset all</button></div>
+
+  <fieldset>
+    <legend>Sound</legend>
+    <div class="seg" role="group" aria-label="Sound source">
+      <button id="srcFile" type="button">Audio file</button>
+      <button id="srcMic" type="button">Microphone</button>
+      <button id="srcTone" type="button">Test tone</button>
+    </div>
+    <p class="hint src-none">Pick a source, or start from a preset below.</p>
+    <div class="src-file">
+      <label class="btn" style="display:inline-block">Choose file…<input id="file" type="file" accept="audio/*,video/*" hidden></label>
+      <audio id="player" controls></audio>
+    </div>
+    <div class="src-mic" role="status"><i class="dot"></i><span>Listening to the microphone (not played back, to avoid feedback)</span><button id="micStop" type="button">Stop</button></div>
+    <div class="src-tone">
+      <label>Waveform <select id="wave"><option value="sine">Sine</option><option value="square">Square</option><option value="sawtooth">Sawtooth</option><option value="triangle">Triangle</option></select><span></span></label>
+      <label>Frequency <input id="toneHz" type="number" min="1" max="20000" step="any" value="440"><span class="unit">Hz</span></label>
+      <label>Quick pick <select id="freqSet">
+        <option value="">—</option>
+        <optgroup label="Solfeggio"><option>174</option><option>285</option><option>396</option><option>417</option><option>528</option><option>639</option><option>741</option><option>852</option><option>963</option></optgroup>
+        <optgroup label="Concert pitch A4"><option>432</option><option>440</option></optgroup>
+      </select><span></span></label>
+      <label>Sweep <input id="tone" type="range" min="0" max="1000" step="0.1" value="440" aria-label="Frequency, logarithmic"><span></span></label>
+      <label>Level <input id="level" type="range" min="0" max="1" step="0.01" value="0.3"><output></output></label>
+    </div>
+    <label class="not-mic">Hear output <input id="hear" type="checkbox" checked><span></span></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Presets</legend>
+    <div class="presets" id="presets"></div>
+  </fieldset>
+
+  <fieldset id="plateSet">
+    <legend>Plate</legend>
+    <label>Shape <select id="shape"><option value="circle">Circle</option><option value="rect">Rectangle</option></select><span></span></label>
+    <label>Edge <select id="bc"><option value="free">Free</option><option value="clamped">Clamped</option><option value="simply">Simply supported</option></select><span></span></label>
+    <label class="rect">Left edge <select id="eL" class="edge"></select><span></span></label>
+    <label class="rect">Right edge <select id="eR" class="edge"></select><span></span></label>
+    <label class="rect">Top edge <select id="eT" class="edge"></select><span></span></label>
+    <label class="rect">Bottom edge <select id="eB" class="edge"></select><span></span></label>
+    <label>Material <select id="material">
+      <option value="aluminum">Aluminium</option><option value="steel">Steel</option><option value="brass">Brass</option>
+      <option value="glass">Glass</option><option value="acrylic">Acrylic</option><option value="custom">Custom</option>
+    </select><span></span></label>
+    <label>Young's modulus <input id="E" type="number" min="0.01" step="any" value="69"><span class="unit">GPa</span></label>
+    <label>Density <input id="rho" type="number" min="1" step="any" value="2700"><span class="unit">kg/m³</span></label>
+    <label>Poisson's ratio <input id="nu" type="number" min="0" max="0.49" step="0.01" value="0.33"><span></span></label>
+    <label class="circ">Diameter (cm) <input id="d" type="range" min="5" max="100" step="0.5" value="24"><output></output></label>
+    <label class="rect">Width (cm) <input id="lx" type="range" min="5" max="100" step="0.5" value="30"><output></output></label>
+    <label class="rect">Height (cm) <input id="ly" type="range" min="5" max="100" step="0.5" value="30"><output></output></label>
+    <label>Thickness (mm) <input id="h" type="range" min="0.2" max="6" step="0.05" value="1"><output></output></label>
+    <label>Damping ratio ζ <input id="zeta" type="range" min="0.001" max="0.1" step="0.001" value="0.01"><output></output></label>
+    <label>Thick-plate (Mindlin) <input id="mindlin" type="checkbox" checked><span></span></label>
+    <label>Field grid <input id="res" type="range" min="64" max="256" step="16" value="160"><output></output></label>
+    <p id="status"></p>
+    <details>
+      <summary>Eigenmodes (click to play)</summary>
+      <p class="hint"><span class="circ">Labels are (nodal diameters, nodal circles); hover for nodal radii.</span><span class="rect">Rectangular modes are numbered by frequency.</span></p>
+      <div id="modes"></div>
+    </details>
+  </fieldset>
+
+  <fieldset>
+    <legend>Driver</legend>
+    <label>Mounting <select id="mount"><option value="force">Point force</option><option value="shaker">Bolted to shaker</option><option value="rigid">Rigid bolt (no shaker)</option></select><span></span></label>
+    <label class="shaker">Moving mass (g) <input id="ma" type="number" min="0" step="any" value="20"><span class="unit">g</span></label>
+    <label>Distance from centre <input id="dr" type="range" min="0" max="0.97" step="0.01" value="0"><output></output></label>
+    <label>Angle (°) <input id="da" type="range" min="-180" max="180" step="1" value="-90"><output></output></label>
+    <p class="hint">Point force: a free plate pushed at the marker. Bolted to shaker: a real Chladni rig, where the shaker's moving mass (armature, screw, washer) is fixed to the plate at the marker. Rigid bolt: that mass is infinite, so the marker moves exactly with the drive. Click the plate to move the marker.</p>
+    <label>Auto level <input id="auto" type="checkbox" checked><span></span></label>
+    <label>Target peak (g) <input id="target" type="range" min="1.1" max="40" step="0.1" value="10"><output></output></label>
+    <label>Drive at 0 dBFS <input id="force" type="number" min="0" step="any" value="2"><span class="unit" id="forceUnit">N</span></label>
+    <label>Gravity (m/s²) <input id="g" type="number" min="0.1" step="any" value="9.81"><span></span></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Analysis</legend>
+    <label>Peaks used <input id="peaks" type="range" min="1" max="24" step="1" value="8"><output></output></label>
+    <label>Lowest (Hz) <input id="fmin" type="number" min="1" step="any" value="40"><span></span></label>
+    <label>Highest (Hz) <input id="fmax" type="number" min="100" step="any" value="8000"><span></span></label>
+    <label>Floor (dB) <input id="floor" type="range" min="-120" max="-20" step="1" value="-75"><output></output></label>
+    <label>FFT size <select id="fft"><option>4096</option><option selected>8192</option><option>16384</option><option>32768</option></select><span></span></label>
+    <label>Smoothing <input id="smooth" type="range" min="0" max="0.95" step="0.05" value="0.6"><output></output></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Sand</legend>
+    <label>Grains <input id="grains" type="range" min="5000" max="300000" step="5000" value="100000"><output></output></label>
+    <label>Grain size <input id="grain" type="range" min="0.5" max="3" step="0.25" value="1"><output></output></label>
+    <label>Mobility <input id="mob" type="range" min="0" max="1.5" step="0.05" value="0.35"><output></output></label>
+    <label>Bounce scatter <input id="jit" type="range" min="0" max="0.3" step="0.01" value="0.06"><output></output></label>
+    <label>Sand colour <input id="sandCol" type="color" value="#e8e0a0"><span></span></label>
+    <label>Plate colour <input id="plateCol" type="color" value="#1c1d1a"><span></span></label>
+    <label>Background <input id="bg" type="color" value="#0b0c0e"><span></span></label>
+    <label>Acceleration map <input id="overlay" type="checkbox"><span></span></label>
+    <label>Show driver <input id="showDrive" type="checkbox" checked><span></span></label>
+    <div class="row"><button id="resprinkle" type="button">Re-sprinkle sand</button><button id="pause" type="button">Pause</button></div>
+  </fieldset>
+
+</form>
+</aside>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
