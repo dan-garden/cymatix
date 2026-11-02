@@ -22,7 +22,7 @@ const within = (pairs, maxPct, name) => pairs.forEach(([g, w, tag]) => assert.ok
 const inBounds = (g, lo, hi, tag) => assert.ok(g >= lo * (1 - 2e-5) && g <= hi * (1 + 2e-4), `${tag}: ${g} not in [${lo}, ${hi}]`); // bounds are printed to 5 figures
 const median = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
 
-test('Leissa ch. 4: C-C-C-C, Tables 4.22–4.32 (including the rigorous bounds of Bazley, Fox & Stadler and Aronszajn)', () => {
+test('Leissa ch. 4: C-C-C-C, Tables 4.22–4.32 (including the rigorous bounds of Bazley, Fox & Stadter and Aronszajn)', () => {
   const sq = L('CCCC', 0.3, 1);
   within([35.9866, 73.40, 108.22, 132.18, 164.99].map(v => [near(sq, v), v]), 0.03, 'T4.22 Tomotika/Iguchi');
   within([35.99, 73.41, 108.27, 131.64, 132.25, 165.15].map(v => [near(sq, v), v]), 0.1, 'T4.22 Young');
@@ -177,7 +177,7 @@ test('Leissa ch. 4: C-C-C-SS, C-C-SS-SS, C-C-F-F, C-F-C-F and C-F-SS-F, Tables 4
 });
 
 test('Leissa ch. 4: cantilever plates, Tables 4.45–4.50, within rigorous bounds', () => {
-  // T4.49: Bazley, Fox & Stadler lower bounds and 50-term upper bounds for symmetric modes, a/b = 0.125 … 8
+  // T4.49: Bazley, Fox & Stadter lower bounds and 50-term upper bounds for symmetric modes, a/b = 0.125 … 8
   const t449 = { 0.125: [[3.4926, 3.5134], [3.9425, 4.0448], [5.3402, 5.6095], [7.6439, 8.2204], [11.050, 11.995], [15.576, 17.008], [20.827, 21.977], [21.869, 22.618], [22.381, 23.431], [24.067, 24.909]],
     0.25: [[3.4835, 3.5094], [5.2559, 5.5171], [10.583, 11.313], [20.106, 21.465], [21.900, 22.309], [24.040, 24.857], [30.755, 32.500], [35.142, 37.669], [41.738, 44.481], [53.987, 58.218]],
     0.5: [[3.4608, 3.5001], [9.7605, 10.210], [21.529, 21.891], [29.927, 31.522], [32.906, 34.160], [55.061, 58.195], [60.256, 61.560], [68.292, 71.346], [74.355, 77.717], [93.740, 99.722]],
@@ -197,7 +197,7 @@ test('Leissa ch. 4: cantilever plates, Tables 4.45–4.50, within rigorous bound
 });
 
 test('Leissa ch. 4: completely free plates, Tables 4.61–4.76, within rigorous bounds', () => {
-  // T4.75 (Bazley, Fox & Stadler): doubly antisymmetric modes 1–10, b/a = 1 … 8
+  // T4.75 (Bazley, Fox & Stadter): doubly antisymmetric modes 1–10, b/a = 1 … 8
   const t475 = { 1: [[13.092, 13.474], [66.508, 69.576], [75.146, 77.411], [145.57, 153.12], [196.46, 205.17], [207.87, 214.81], [277.72, 292.37], [285.47, 299.27], [393.93, 420.99], [410.74, 430.66]],
     1.25: [[10.479, 10.761], [48.352, 50.487], [67.665, 69.746], [117.68, 124.15], [132.77, 138.41], [197.36, 205.77], [208.75, 220.03], [249.46, 262.66], [264.27, 277.23], [339.96, 358.87]],
     1.5: [[8.6667, 8.9351], [36.651, 38.294], [64.844, 66.965], [94.147, 98.648], [103.32, 108.18], [166.83, 176.56], [184.44, 193.73], [198.62, 205.35], [234.75, 244.80], [261.14, 275.96]],
@@ -206,7 +206,7 @@ test('Leissa ch. 4: completely free plates, Tables 4.61–4.76, within rigorous 
     8: [[1.5330, 1.6158], [4.7291, 4.9941], [8.2953, 8.7915], [12.436, 13.237], [17.323, 18.514], [23.095, 24.766], [29.845, 32.089], [37.617, 40.542], [46.410, 50.150], [56.017, 60.602]] };
   for (const [ba, rows] of Object.entries(t475)) { const c = L('FFFF', 0.3, +ba, 1, 1); rows.forEach(([lo, hi], i) => inBounds(c[i], lo, hi, `T4.75 b/a ${ba} #${i + 1}`)); }
   // T4.67: antisymmetric about the axes and symmetric about the diagonals (a subset of that class), ν = 0.225 and 0.3;
-  // upper bounds are Bazley–Fox–Stadler's 50-term ones (Sigillito's column dips below the true value: 13.464 < 13.468)
+  // upper bounds are Bazley–Fox–Stadter's 50-term ones (Sigillito's column dips below the true value: 13.464 < 13.468)
   for (const [nu, rows] of [[0.3, [[13.201, 13.473], [75.735, 77.354], [147.71, 153.07], [209.46, 214.62], [288.72, 299.05], [416.00, 430.33], [432.13, 450.71], [498.77, 516.19], [645.60, 676.35], [701.20, 727.08]]],
     [0.225, [[13.851, 14.118], [76.245, 77.576], [151.54, 156.36], [210.90, 214.67], [293.27, 302.24], [421.26, 430.76], [438.47, 456.37], [504.41, 519.03], [654.62, 682.76], [710.70, 726.97]]]]) {
     const c = L('FFFF', nu, 1, 1, 1);

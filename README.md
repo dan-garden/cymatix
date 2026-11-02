@@ -1,179 +1,205 @@
 # Cymatix
 
-Sound drives a simulated vibrating plate, and sand collects on its nodal lines (Chladni figures), in real time.
-The source can be an audio/video file, the microphone, or a test tone (sine, square, sawtooth or triangle, any frequency).
-Presets load a plate, driver and tone and clear the sand; "Reset all" returns every setting to its default, as does reloading.
-Under Plate → Eigenmodes, clicking a mode plays its exact frequency (hover a circular mode for its nodal radii).
+**See the shape of sound.** Cymatix turns any sound into Chladni figures: sand patterns on a simulated vibrating plate, computed live in your browser from published plate physics.
+
+![Cymatix in action: clicking presets makes sand gather into rings, squares, stars and grids](docs/demo.gif)
+
+## Features
+
+- **Three sound sources:** an audio or video file, your microphone, or a test tone (sine, square, sawtooth or triangle).
+- **Any plate:** a circle or rectangle of any size and thickness, in aluminium, steel, brass, glass, acrylic or your own material.
+- **Real mountings:** free, clamped or simply supported edges, set per edge on rectangles.
+- **Three ways to drive it:** a point force, a shaker or a rigid bolt.
+- **Nine presets:** including a plate from a [published experiment](https://doi.org/10.3390/e24020215).
+- **Mode explorer:** click any natural mode to hear its exact frequency and see its pattern.
+- **Nothing to install:** plain JavaScript, no build step and no dependencies.
+
+## Quick start
 
 ```bash
-npm start   # serves on http://localhost:8137 (ES modules need http; the mic needs localhost or https)
-npm test    # physics checks against theory and experiment
+git clone https://github.com/dan-garden/cymatix.git
+cd cymatix
+npm start
 ```
 
-No build step and no dependencies: `index.html`, `app.js` (audio, sand, drawing), `physics.js` (all the maths).
+Then open <http://localhost:8137> and click a preset.
 
-## What is computed
+- `npm start` serves the folder with Python 3.
+- The microphone only works on `localhost` or HTTPS.
+- Click the plate to move the driver.
+- **Reset all** restores every default, and so does reloading the page.
+- `npm test` runs the physics checks. It needs Node.
 
-- **Spectrum** – Web Audio FFT; the strongest peaks (parabolic interpolation) become sinusoidal drives at the driver,
-  scaled so a 0 dBFS sine gives the "drive at 0 dBFS". Auto level instead sets the drive so the antinodes reach the target g.
-- **Plate** – Kirchhoff thin plate, D = Eh³/12(1−ν²).
-  Circle: exact modes [J_n(kr) + C·I_n(kr)]·cos nθ from the free, clamped or simply supported frequency equations.
-  Rectangle: Rayleigh–Ritz on orthonormalised Legendre bases, each edge free, simply supported or clamped independently
-  (e.g. a cantilever: one clamped edge, three free); the eigenproblem is solved by Householder tridiagonalisation + QL.
-  The basis has the same density along both sides, so long plates get more functions along their length (b/a = 8: 13 × 102).
-- **Thick plates** – each mode's frequency is corrected for shear deformation and rotary inertia with Mindlin's dispersion
-  relation at the mode's bending wavenumber (κ² = π²/12). Exact for simply supported edges; for clamped/free edges it removes
-  most of the thick-plate error (at h/a = 0.1: thin-plate theory is 6–20 % high, corrected 0.4–5 %). Below h/L ≈ 0.02 it is negligible.
-- **Response** – steady-state modal superposition with modal damping ζ. G(x,x₀) = Σ φ_k(x)φ_k(x₀) / (m(ω_k² − ω² + 2iζω_kω)).
-  - *Point force* F: W = F·G(x,x₀).
-  - *Bolted to shaker* (a real Chladni rig): coil force F drives the shaker's moving mass m_a (armature, screw, washer), which is
-    fixed to the plate; the plate receives F / (1 − m_a ω² G(x₀,x₀)). Resonances sit between the free plate's (m_a → 0) and the
-    plate pinned at the bolt (m_a → ∞).
-  - *Rigid bolt*: the m_a → ∞ limit, W = W₀·G(x,x₀)/G(x₀,x₀).
-  - The modes above the cut-off ω_K still add flexibility at the bolt. Up there a plate's point receptance tends to an
-    infinite plate's, so G(x₀,x₀) gets their sum in closed form, ln((ω_K+ω)/(ω_K−ω)) / (8π ω √(Dρh)). Without it the
-    bolted resonances drift up to 3 % high at the app's usual cut-off; with it they match exact point-support and
-    point-mass solutions to 0.03 %.
+## Gallery
 
-  Peaks at different frequencies add in power; Γ = plate acceleration / g. The readout gives the deflection as a share of
-  the thickness and warns above 20 %, where the linear theory used here stops being accurate.
-- **Sand** – grains move only where Γ > 1, drifting down ∇Γ with random scatter, so they settle where the plate is quieter than gravity.
-  Where the sand ends up follows from the vibration field; how fast it gets there is a phenomenological model (mobility, scatter).
+Every pattern below is a preset in the app, captured 6 seconds after loading it.
 
-## Checked against theory
+![Nine sand patterns from the app's presets](docs/gallery.png)
 
-`physics.test.js`: Bessel values against their power series; circular-plate eigenvalues against the closed-form frequency
-equations (independently solved in scipy); square-plate Ritz eigenvalues against exact (simply supported) and published
-(clamped, free) values; static centre deflection against plate theory (circle Fa²/16πD, square 0.0116 Fa²/D);
-the Mindlin correction against exact Mindlin solutions (Hashemi & Arsanjani 2005, Table 9: within 2×10⁻⁵);
-cantilever eigenvalues against Leissa NASA SP-160 Tables 4.51–4.52 (converged, at most 0.5 % below his 1969 upper bounds);
-the peak finder on a real Blackman-windowed analyser spectrum (frequency within 0.05 Hz at 5.4 Hz bins, level within 0.05 dB).
+## How it works
 
-## Checked against experiment
+1. **Read the sound.** The browser's FFT finds the strongest frequency peaks.
+2. **Solve the plate.** The app computes the plate's natural modes from its shape, material and edges.
+3. **Shake the plate.** Each peak drives the plate at the driver point. Adding up the modes gives the vibration everywhere.
+4. **Move the sand.** Grains only move where the plate accelerates faster than gravity. They drift to quieter spots and collect on the nodal lines.
 
-All of these run in `npm test` except the scale-free table and Leissa's Table 4.53.
+## The science
 
-### Square plates
+Every formula and where it comes from. All the code is in [physics.js](physics.js).
 
-Shu et al., [*Entropy* 24, 215 (2022)](https://pmc.ncbi.nlm.nih.gov/articles/PMC8870825/), Fig. 2: a 320 × 320 × 1 mm aluminium
-square screwed to a shaker at its centre, with 25 measured sand-pattern resonances from 263 to 4817 Hz. Simulated with the
-paper's material values (E 70 GPa, ρ 2700, ν 0.33):
+| Part | Model | Source |
+|---|---|---|
+| Plate bending | Thin-plate theory, `D = Eh³ / 12(1 − ν²)` | [Kirchhoff 1850](https://doi.org/10.1515/crll.1850.40.51), [Leissa 1969](https://ntrs.nasa.gov/citations/19700009156) |
+| Circular plates | Exact modes, `[J_n(λρ) + C·I_n(λρ)]·cos nθ` | [Kirchhoff 1850](https://doi.org/10.1515/crll.1850.40.51), [Leissa 1969](https://ntrs.nasa.gov/citations/19700009156) ch. 2 |
+| Bessel functions | Integral forms, computed with the trapezoid rule | [DLMF §10.9](https://dlmf.nist.gov/10.9), [DLMF §10.32](https://dlmf.nist.gov/10.32), [Trefethen & Weideman 2014](https://doi.org/10.1137/130932132) |
+| Rectangular plates | Rayleigh–Ritz with orthogonal Legendre polynomials, each edge independent | [Ritz 1909](https://doi.org/10.1515/crll.1909.135.1), [Bhat 1985](https://doi.org/10.1016/s0022-460x(85)80109-7), [Dickinson & Di Blasio 1986](https://doi.org/10.1016/s0022-460x(86)80310-8) |
+| Eigenvalue solver | Householder tridiagonalisation, then QL | [Martin et al. 1968](https://doi.org/10.1007/bf02161841), [Bowdler et al. 1968](https://doi.org/10.1007/bf02166681), [JAMA](https://math.nist.gov/javanumerics/jama/) |
+| Thick plates | Mindlin's dispersion relation for each mode, `κ² = π²/12` | [Mindlin 1951](https://doi.org/10.1115/1.4010217), [Mindlin et al. 1956](https://doi.org/10.1115/1.4011349) |
+| Forced vibration | Modal sum with damping, `G(x,x₀) = Σ φ_k(x)·φ_k(x₀) / m(ω_k² − ω² + 2iζω_k·ω)` | [Bishop & Johnson 1960](https://www.cambridge.org/9781107402454) |
+| Shaker mount | Force reaching a plate that carries moving mass `m_a`, `F / (1 − m_a·ω²·G₀)`, where `G₀ = G(x₀,x₀)` | Derived here from receptance coupling, [Bishop & Johnson 1960](https://www.cambridge.org/9781107402454) |
+| Rigid bolt | The limit of large `m_a`, `W = W₀·G(x,x₀) / G₀` | Same derivation, checked against [Leissa 1969](https://ntrs.nasa.gov/citations/19700009156) Tables 2.12–2.15 |
+| Modes above the cut-off | Added to `G₀`: `ln((ω_K+ω)/(ω_K−ω)) / (8πω√(Dρh))` | Derived here from plate modal density, [Cremer et al. 2005](https://doi.org/10.1007/b137728), [Skudrzyk 1980](https://doi.org/10.1121/1.384169) |
+| Spectrum | Blackman-window FFT | [W3C Web Audio API](https://www.w3.org/TR/webaudio/), [Harris 1978](https://doi.org/10.1109/proc.1978.10837) |
+| Peak finding | Parabolic interpolation between FFT bins | [Smith, *Spectral Audio Signal Processing*](https://ccrma.stanford.edu/~jos/sasp/Quadratic_Interpolation_Spectral_Peaks.html) |
+| Several tones | Different frequencies add in power | Modelling choice, no external source |
+| Sand threshold | Grains leave the plate when `Γ = acceleration / g > 1` | [Bougie & Duckert 2011](https://doi.org/10.1103/physreve.83.011303) |
+| Sand motion | Drift down `∇Γ` plus random scatter | Modelling choice, in line with [Arango & Reyes 2016](https://doi.org/10.1017/s0013091515000139) and [Zhou et al. 2016](https://doi.org/10.1038/ncomms12764) |
 
-| Model | Free parameters | Resonances 200–5000 Hz | f1–f3 error | f4–f25 median | RMS, all 25 |
-|---|---|---|---|---|---|
-| Rigid bolt | none | 24 (measured: 25) | −20, −5, −7 % | 0.4 % | 4.6 % |
-| Shaker, moving mass 20 g | m_a (not given in the paper; 16–25 g all fit) | 24 | −2.4, 0.0, +0.5 % | 0.4 % | 1.7 % |
+## How accurate is it?
 
-Shifting the rigid model by ±3–10 % raises its f4–f25 median to 1.7–3.2 %, so the agreement is not chance matching.
-Patterns compared by eye with the photos at f1–f7 match in topology (rings, diamonds, corner loops, the X at 697 Hz).
+`npm test` runs 24 tests. The tables below are the summary. [docs/validation.md](docs/validation.md) has the full results, including errors found in the reference book.
 
-Further rigs, compared scale-free (one overall frequency factor fitted, which absorbs unstated thickness or stiffness),
-against the RMS a wrong model reaches by chance (median over factors 0.7–1.3):
+### Against real measurements
 
-| Experiment | Plate | Best factor | RMS | By chance |
+| Study | Plate | Compared | Result | In `npm test` |
 |---|---|---|---|---|
-| Shu et al. 2022 (shaker, 20 g) | 320 × 1 mm Al, centre screw | 1.007 | 1.7 % | 5.5 % |
-| D'Alessio, *SN Appl. Sci.* 3:60 (2021) (shaker, 20 g) | 240 × 0.9 mm Al, PASCO driver rod | 0.88 | 1.8 % | 13 % |
-| Kovacic & Kanovic, *Symmetry* 15:1748 (2023) (rigid bolt) | 250 × 2 mm Al, LDS V408 shaker, material not stated | 0.82 | 1.7 % | 16 % |
-| Lin et al., *Symmetry* 16:1460 (2024), off-centre drive | 320 × 1 mm Al | — | 3.6 % | 3.3 % |
+| [Shu et al. 2022](https://doi.org/10.3390/e24020215) | 320 × 1 mm aluminium square on a shaker | 25 resonances | 1.7 % RMS (chance: 5.5 %) | Yes |
+| [Escaler & De La Torre 2018](https://doi.org/10.1016/j.jfluidstructs.2018.07.017) | 240 × 0.8 mm aluminium circle | 6 resonances | −0.4 % to +1.8 %, nothing fitted | Yes |
+| [Waller 1938](https://doi.org/10.1088/0959-5309/50/1/306) | Free brass circles | 76 frequency ratios | Median 1.6 % | Yes |
+| [Waller 1938](https://doi.org/10.1088/0959-5309/50/1/306) | Free brass circles | 60 nodal circles | Median 0.0014 r/a | Yes |
+| [Strehlke 1855](https://doi.org/10.1002/andp.18551710805) | Free circles | Nodal circles | Within 0.003 r/a | Yes |
+| [Waller 1939](https://doi.org/10.1088/0959-5309/51/5/312) | Free brass square | 89 frequency ratios | Median 0.9 %, worst 4.4 % | Yes |
+| [Leissa 1969](https://ntrs.nasa.gov/citations/19700009156) Tables 4.55–4.58 | Real cantilevers | 68 frequencies | −5.4 % to +2.6 % | Yes |
+| [D'Alessio 2021](https://doi.org/10.1007/s42452-020-04062-6) | 240 × 0.9 mm aluminium square | 4–5 resonances | 1.8 % RMS after fitting one factor (chance: 13 %) | No |
+| [Kovacic & Kanovic 2023](https://doi.org/10.3390/sym15091748) | 250 × 2 mm square | 4–5 resonances | 1.7 % RMS after fitting one factor (chance: 16 %) | No |
+| [Lin et al. 2024](https://doi.org/10.3390/sym16111460) | 320 × 1 mm aluminium square, off-centre drive | Resonances | 3.6 % RMS (chance: 3.3 %), so **inconclusive** | No |
 
-The sequence of resonances matches in every case where the comparison can discriminate; the absolute level is
-pinned down only where the plate is fully specified (Shu). Lin's off-centre drive excites so many modes that
-nearest-peak matching is at chance level: it neither confirms nor refutes the model without matching each photographed pattern.
-The mount model per row (shaker vs rigid) follows the driver used; with 4–5 frequencies those two rows are supporting evidence only.
+How to read this:
 
-### Cantilever plates
+- **"Chance"** is the error a wrong model reaches by accident. A result only means something if it beats chance.
+- **Shu et al.:** one value is fitted, the shaker's moving mass (20 g), because the paper doesn't give it. Without any fit, a rigid bolt gives 4.6 % RMS.
+- **D'Alessio and Kovacic:** the fitted factor absorbs unknown thickness or stiffness. With so few frequencies, these rows are supporting evidence only.
+- **Patterns:** the Shu et al. patterns for f1–f7 were compared with the photos by eye. They match in topology, but this is not a numerical test.
 
-Leissa, NASA SP-160 (1969), pp. 82–86, measured frequency parameters ωa²√(ρh/D) of real cantilevers (one clamped edge):
+### Against theory
 
-| Table | Plates | Modes | Measured vs model |
-|---|---|---|---|
-| 4.55 | aluminium, a/b = ½, 1, 2, 5 | 14 | mean −1.3 %, worst −4.2 % |
-| 4.57 | 6061-T6, 7.5 × 7.5 × 0.125 in (Craig, Plass & Caughfield) | 4 | mean −3.0 %, worst −4.1 % |
-| 4.58 | steel, 10 × 10 × 0.0627 in (Gustafson, Stokey & Zorowski) | 5 | mean −1.9 %, worst −3.6 % |
-| 4.56 | steel strips, a/b = 2–5, h/a = 0.02 (Plunkett & Wilson), modes up to λ ≈ 290 | 45 | median 1.0 %, mean −0.7 %, worst −5.4 % |
-| 4.53 | mild steel 5.12 × 2.76 × 0.053 in, in Hz with handbook steel values | 22 | mean −3.1 %, worst −5.8 % |
-
-All 68 nondimensional values (4.55–4.58) lie within −5.4 … +2.6 % and run a little below the model, as expected: a real
-clamp is never perfectly rigid, which lowers the measured frequencies, most of all the fundamental. For 4.56 the Mindlin
-correction halves the median error at a/b = 2 (1.0 → 0.5 %; chance level 5.2 %). For 4.53 Leissa's printed 1969 theory
-misses the same measurements by 0.2–8.9 %. The app also reproduces the four sand photographs of a square cantilever in
-Leissa's Fig. 4.45 in mode order: centre line (torsion), line near the free edge, two lines along the sides, a cross.
-Two more measured sets (README only): Table 4.47's square cantilever runs 4–6 % below the model, and Heiba's ⅛-in steel
-cantilevers (Fig. 4.46, 22 labelled modes, a/b = 1 … 0.4, handbook steel) average 1.8 % below it with 4 % scatter.
-
-### Circular plates
-
-- **Nodal circles, Strehlke (1855)** via Rayleigh, *Theory of Sound* §220: the exact solver reproduces Kirchhoff's calculated
-  radii to within 2×10⁻⁴ r/a, and Strehlke's measured ones to within 0.003 r/a.
-- **Nodal circles, Waller (1938)** via Leissa, NASA SP-160, Table 2.9: 60 measured circles on free brass plates
-  (0–5 nodal diameters, 1–4 circles): median error 0.0014 r/a, worst 0.006.
-- **Frequencies, Waller (1938)**, Table 2.8: 76 measured frequency ratios (up to 24 nodal diameters, 6 circles): median error 1.6 %.
-- **Centre-driven Chladni plate**, Escaler & De La Torre, *J. Fluids Struct.* (2018): 240 × 0.8 mm aluminium, driven through
-  a bar, moving mass 0.08 kg as stated by the authors (nothing fitted here). Free-plate frequencies agree with the
-  authors' own theory within 0.1 %. All 6 measured resonances (70–4129 Hz) are reproduced, exactly 6 in band, at
-  +1.8, +1.1, +0.5, +0.3, +0.1, −0.4 %. Measured nodal circles beyond r/a = 0.2 agree within 0.022 (mean 0.008); the
-  innermost ones lie on the 8 mm drive bar, which the point mount does not resolve.
-
-### Recovering an unknown rig from a photo
-
-A widely shared photo of 12 square-plate patterns (345–5907 Hz) gives no plate details. Its centre dot and fourfold
-symmetry mean a free square bolted at the centre; frequencies then depend only on h·√(E/ρ)/L² and the shaker's moving
-mass relative to the plate. Fitting those two to the 12 frequencies gives RMS 1.3–1.5 % (chance: 6.7 %) for a moving
-mass of 5–8 % of the plate, e.g. a 24 cm × 0.75 mm aluminium square on a ~7 g shaker (the "12-pattern photo plate"
-preset). Rendered at the photo's frequencies, 345, 2041, 3835, 4840 and 5201 Hz match the photographs closely and most
-of the rest in structure; the photo's 4444 Hz pattern is itself lopsided (a real plate's imperfection). The rigid-bolt
-alternative fits the frequencies at 2.2 % but gives the wrong patterns, so the photos decide between them.
-
-## Checked against Leissa, *Vibration of Plates* (NASA SP-160, 1969)
-
-`leissa.test.js` and `leissa-ch4b.test.js` check every table in chapters 2 and 4 that covers what the app models, read from the
-[scanned pages](https://archive.org/details/DTIC_ADA307623) (chapter 12's only isotropic table, Tomar's thick circular
-plate, is one Leissa himself calls "highly questionable"). Where a printed value disagrees, an independent exact solution
-(scipy) or a measurement decides, and in every such case it sides with the app:
-
-| Leissa | Plate | Values | Agreement |
-|---|---|---|---|
-| 2.1, 2.2 | clamped circle: λ² up to 14 diameters / 9 circles, nodal radii | 64 + 88 | median 0.001 %; radii median 0.0003 r/a |
-| 2.3, 2.4 | simply supported circle | 12 + 18 | 0.01 % (the table is labelled ν = 0.3 but is the ν = 1/3 roots) |
-| 2.5, 2.6 | free circle, ν = 0.33 and 0.25 | 74 + 38 | median 0.13 % and 0.01 % |
-| 2.7 | free-circle nodal radii | 88 | 67 within 0.005 r/a; in the other 15 measured cases Waller's measurement sides with the app |
-| 2.12–2.15 | free / simply supported / clamped circle held at the centre; clamped circle with a central mass | 20 | exact solutions matched to 0.03 % through the app's rigid-bolt and shaker models |
-| 4.3–4.8 | SS-C-SS-C rectangles, many aspect ratios | 176 | median 0.03 % |
-| 4.10–4.20 | SS-C-SS-SS, SS-C-SS-F, SS-SS-SS-F, SS-F-SS-F rectangles | 275 | median 0.01–0.2 %; exact Lévy solutions matched to 0.01 % |
-| 4.22–4.31 | C-C-C-C: Claassen & Thorne's grid (a/b = 1 … 0.02), Young, Iguchi, Ödman, mode veering | 497 + 107 | 490 of 497 within 0.01 %; the other 7 are 5 digit slips plus 0.11–0.15 % |
-| 4.25, 4.26, 4.32 | C-C-C-C rigorous lower/upper bounds (Bazley, Fox & Stadler; Aronszajn), b/a = 1 … 8 | 110 | all inside |
-| 4.33–4.44 | C-C-C-SS, C-C-SS-SS, C-C-F-F, C-F-C-F (λ and λ* tables), C-F-SS-F | ~240 | to the printed figures; beam-function Ritz upper bounds sit above ours |
-| 4.45–4.50 | cantilevers: rigorous bounds for a/b = 0.125 … 8, Barton/Young upper and Gontkevich lower bounds | 70 + 20 | all inside |
-| 4.61–4.76 | completely free: rigorous bounds (b/a = 1 … 8), Lemke at four ν, Iguchi | 80 + 24 + 19 | all bounds hold; Lemke's upper bounds 0.1–1.2 % above ours |
-| 4.68 | Waller's measured free square brass plate, frequency ratios up to 147 | 89 | median 0.9 %, worst 4.4 % |
-
-Misprints or errors in the book that the comparison exposed: Table 2.5 (1,7) prints 651.8 for ≈ 553; Table 2.7 prints
-.925/.926/.993 where theory and Waller's measurement both give .898–.915; Table 2.15's "precise" central-mass roots are up
-to 0.34 % low; Table 4.6 prints λ* = 24.047 at a/b = 1.5 for 25.047; Table 4.7 at a/b = 1 contradicts Table 4.3;
-Table 4.17 is wrong at a/b = 0.6, 0.8 and 5 (by up to 7 %); Table 4.9, an older approximate source, is up to 3.4 % off
-Table 4.6 and is not used; the SS-F-SS-F (m,1) values of Tables 4.19–4.20 are wrong, as Leissa notes. In the second half
-of chapter 4: digit slips in Table 4.30 (32.9981 for 32.7980, 42.2530 for 42.3253, 75.5403 for 75.4503, 16.2699 for
-22.3821, 96.0908 for 96.2324), Table 4.40 (λ* 18.93 for 17.93), Table 4.42 (λ* 2.3 for 2.4) and Tables 4.42/4.43 (61.2,
-below both neighbours); Kanazawa & Kawai's non-square values (Tables 4.28, 4.35–4.37) run a uniform 2.1–2.3 % high
-against Claassen & Thorne and the app; Dill & Pister's and Kanazawa & Kawai's C-C-C-SS a/b = 0.5 value (24.48) lies above
-a converged Ritz value (24.14275, unchanged from 20 to 44 functions), which bounds the exact one from above; Iguchi's
-Table 4.65 has two roots that cannot exist (65.368; 173.695, in a gap Table 4.75's rigorous bounds prove empty) and two
-values above Table 4.67's rigorous upper bounds; Sigillito's "upper bound" 13.464 (Table 4.67) is below the true 13.468.
-Not used: Bolotin's approximations (4.24), a different plate theory (4.47's theory row), Walton (4.59, no plate size),
-Ödman's single-product estimates (4.64, 4.72), the Ritz single-term rows of 4.62/4.63 (median 0.5 % off), Pavlik
-(4.69–4.71, units unresolved; ratios within 1–3 %) and Waller's rectangles (4.77, medians 1.2–3.4 % with unidentified outliers).
+| Reference | Compared | Result |
+|---|---|---|
+| [Leissa 1969](https://ntrs.nasa.gov/citations/19700009156) ch. 2 and 4 | Every table covering plates the app models | Typical median 0.001 % to 0.2 % |
+| Rigorous upper and lower bounds, listed in Leissa | Clamped, cantilever and free rectangles | All inside the bounds |
+| [Hashemi & Arsanjani 2005](https://doi.org/10.1016/j.ijsolstr.2004.06.063) | Exact thick-plate solutions | Within 2×10⁻⁵ |
+| Exact point-support and point-mass solutions, Leissa Tables 2.12–2.15 | Bolted plate models | Within 0.03 % |
+| [Timoshenko & Woinowsky-Krieger 1959](https://archive.org/details/theoryofplatessh0000timo_r3s0) | Static centre deflection of a clamped circle and a simply supported square | Within 0.5 % and 1.5 % |
 
 ## Known limits
 
-- **Clamp size**: the bolt is a point. A real washer or bar clamps a small disk; that is finer than the modal basis resolves,
-  and it shows only in the nodal circle closest to the clamp.
-- **Air and sand loading** are not modelled. Air adds mass mainly to the lowest modes of thin, light plates
-  (for 1 mm aluminium, up to a few % at the fundamental, under 1 % for patterns with many nodal lines).
-- **Linear theory**: no large-amplitude stiffening (see the deflection readout), no Faraday waves, no fine powder
-  gathering at antinodes from air currents.
-- **Near a free edge**, measured outermost nodal circles of high-order modes (Waller, 5–6 circles) sit 0.012–0.021 r/a
-  further out than thin-plate theory, while every inner circle matches within 0.004.
-- **Rectangular modes** are valid up to the frequency shown under "Plate modes"; a thicker or smaller plate covers higher notes.
-- **Inputs dominate in practice**: frequencies scale with h·√(E/ρ), so a 2 % thickness or stiffness error shifts every
-  resonance by 1–2 %. Measure your plate.
+- **Sand speed is a model.** Where sand ends up follows from the vibration. How fast it gets there uses tuned values for mobility and scatter.
+- **Fine powder isn't modelled.** Very fine powder gathers at antinodes because of air currents ([Faraday 1831](https://doi.org/10.1098/rstl.1831.0018)). The app shows sand only.
+- **Vibration is linear.** There's no large-amplitude stiffening ([Chu & Herrmann 1956](https://doi.org/10.1115/1.4011396)) and there are no Faraday waves. The app warns above a deflection of 20 % of the thickness, a threshold chosen for this app.
+- **Air and sand add no mass.** For 1 mm aluminium, air lowers the fundamental by a few percent and lowers patterns with many nodal lines by under 1 % ([Lamb 1920](https://doi.org/10.1098/rspa.1920.0064), [Kwak & Kim 1991](https://doi.org/10.1016/0022-460x(91)90696-h)). These figures are estimates.
+- **The bolt is a point.** A real washer clamps a small disk. This only shows in the nodal circle closest to the clamp.
+- **Thick plates are approximate.** Mindlin's correction is exact for simply supported edges only. With other edges at h/a = 0.1, it is still 0.4–5 % off.
+- **Free edges differ slightly.** On high-order modes with 5–6 circles, Waller's outermost nodal circle sits 0.012–0.021 r/a further out than thin-plate theory. Every inner circle matches within 0.004.
+- **Rectangles have a frequency limit.** Modes are valid up to the frequency shown in the app. A thicker or smaller plate covers higher notes.
+- **Your inputs matter most.** A 2 % thickness or stiffness error shifts every resonance by 1–2 %, so measure your plate.
+- **Material presets are typical values.** They don't come from one cited source.
+- **Quick-pick tones make no health claim.** The Solfeggio, 432 Hz and 440 Hz options are only convenient frequencies. The pattern depends on the plate, not on any special frequency.
+
+## Project files
+
+- [index.html](index.html): the page and its controls.
+- [app.js](app.js): audio, sand and drawing.
+- [physics.js](physics.js): all the plate maths.
+- `*.test.js`: the checks against theory, measurements and Leissa's book.
+
+## References
+
+### Plate theory
+
+- Kirchhoff (1850). [Über das Gleichgewicht und die Bewegung einer elastischen Scheibe](https://doi.org/10.1515/crll.1850.40.51). *J. reine angew. Math.* 40, 51–88.
+- Rayleigh (1894). [The Theory of Sound, vol. 1, 2nd ed.](https://archive.org/details/theorysound07raylgoog) Macmillan.
+- Ritz (1909). [Über eine neue Methode zur Lösung gewisser Variationsprobleme der mathematischen Physik](https://doi.org/10.1515/crll.1909.135.1). *J. reine angew. Math.* 135, 1–61.
+- Lamb (1920). [On the vibrations of an elastic plate in contact with water](https://doi.org/10.1098/rspa.1920.0064). *Proc. R. Soc. A* 98, 205–216.
+- Mindlin (1951). [Influence of rotatory inertia and shear on flexural motions of isotropic, elastic plates](https://doi.org/10.1115/1.4010217). *J. Appl. Mech.* 18, 31–38.
+- Mindlin, Schacknow & Deresiewicz (1956). [Flexural vibrations of rectangular plates](https://doi.org/10.1115/1.4011349). *J. Appl. Mech.* 23, 430–436.
+- Chu & Herrmann (1956). [Influence of large amplitudes on free flexural vibrations of rectangular elastic plates](https://doi.org/10.1115/1.4011396). *J. Appl. Mech.* 23, 532–540.
+- Timoshenko & Woinowsky-Krieger (1959). [Theory of Plates and Shells, 2nd ed.](https://archive.org/details/theoryofplatessh0000timo_r3s0) McGraw-Hill.
+- Bishop & Johnson (1960). [The Mechanics of Vibration](https://www.cambridge.org/9781107402454). Cambridge University Press.
+- Leissa (1969). [Vibration of Plates, NASA SP-160](https://ntrs.nasa.gov/citations/19700009156). Also as a [full scan](https://archive.org/details/DTIC_ADA307623).
+- Skudrzyk (1980). [The mean-value method of predicting the dynamic response of complex vibrators](https://doi.org/10.1121/1.384169). *J. Acoust. Soc. Am.* 67, 1105–1135.
+- Bhat (1985). [Natural frequencies of rectangular plates using characteristic orthogonal polynomials in Rayleigh-Ritz method](https://doi.org/10.1016/s0022-460x(85)80109-7). *J. Sound Vib.* 102, 493–499.
+- Dickinson & Di Blasio (1986). [On the use of orthogonal polynomials in the Rayleigh-Ritz method for the study of the flexural vibration and buckling of isotropic and orthotropic rectangular plates](https://doi.org/10.1016/s0022-460x(86)80310-8). *J. Sound Vib.* 108, 51–62.
+- Kwak & Kim (1991). [Axisymmetric vibration of circular plates in contact with fluid](https://doi.org/10.1016/0022-460x(91)90696-h). *J. Sound Vib.* 146, 381–389.
+- Hashemi & Arsanjani (2005). [Exact characteristic equations for some of classical boundary conditions of vibrating moderately thick rectangular plates](https://doi.org/10.1016/j.ijsolstr.2004.06.063). *Int. J. Solids Struct.* 42, 819–853.
+- Cremer, Heckl & Petersson (2005). [Structure-Borne Sound, 3rd ed.](https://doi.org/10.1007/b137728) Springer.
+
+### Experiments
+
+- Chladni (1787). [Entdeckungen über die Theorie des Klanges](https://www.digitale-sammlungen.de/en/view/bsb10908815). Weidmanns Erben und Reich.
+- Strehlke (1855). [Ueber die Schwingungen homogener elastischer Scheiben](https://doi.org/10.1002/andp.18551710805). *Ann. Phys.* 171, 577–602. The radii are quoted in Rayleigh §220.
+- Waller (1938). [Vibrations of free circular plates. Part 1: Normal modes](https://doi.org/10.1088/0959-5309/50/1/306). *Proc. Phys. Soc.* 50, 70–76. Leissa Ref. 2.21.
+- Waller (1939). [Vibrations of free square plates: part I. Normal vibrating modes](https://doi.org/10.1088/0959-5309/51/5/312). *Proc. Phys. Soc.* 51, 831–844. Leissa Ref. 4.119.
+- Escaler & De La Torre (2018). [Axisymmetric vibrations of a circular Chladni plate in air and fully submerged in water](https://doi.org/10.1016/j.jfluidstructs.2018.07.017). *J. Fluids Struct.* 82, 432–445.
+- D'Alessio (2021). [Forced free vibrations of a square plate](https://doi.org/10.1007/s42452-020-04062-6). *SN Appl. Sci.* 3, 60.
+- Shu, Tseng, Lai, Yu, Huang & Chen (2022). [Exploring the origin of maximum entropy states relevant to resonant modes in modern Chladni plates](https://doi.org/10.3390/e24020215). *Entropy* 24, 215.
+- Kovacic & Kanovic (2023). [Chladni plate in anechoic chamber: symmetry in vibrational and acoustic response](https://doi.org/10.3390/sym15091748). *Symmetry* 15, 1748.
+- Lin, Hsu, Su, Liang & Chen (2024). [Exploring the multiplication of resonant modes in off-center-driven Chladni plates from maximum entropy states](https://doi.org/10.3390/sym16111460). *Symmetry* 16, 1460.
+
+### Sand and granular motion
+
+- Faraday (1831). [On a peculiar class of acoustical figures, and on certain forms assumed by groups of particles upon vibrating elastic surfaces](https://doi.org/10.1098/rstl.1831.0018). *Phil. Trans. R. Soc.* 121, 299–340.
+- Bougie & Duckert (2011). [Continuum simulations of shocks and patterns in vertically oscillated granular layers](https://doi.org/10.1103/physreve.83.011303). *Phys. Rev. E* 83, 011303. [Free copy on arXiv](https://arxiv.org/abs/1009.2742).
+- Arango & Reyes (2016). [Stochastic models for Chladni figures](https://doi.org/10.1017/s0013091515000139). *Proc. Edinb. Math. Soc.* 59, 287–300.
+- Zhou, Sariola, Latifi & Liimatainen (2016). [Controlling the motion of multiple objects on a Chladni plate](https://doi.org/10.1038/ncomms12764). *Nat. Commun.* 7, 12764.
+
+### Numerics and signal processing
+
+- Martin, Reinsch & Wilkinson (1968). [Householder's tridiagonalization of a symmetric matrix](https://doi.org/10.1007/bf02161841). *Numer. Math.* 11, 181–195.
+- Bowdler, Martin, Reinsch & Wilkinson (1968). [The QR and QL algorithms for symmetric matrices](https://doi.org/10.1007/bf02166681). *Numer. Math.* 11, 293–306.
+- Harris (1978). [On the use of windows for harmonic analysis with the discrete Fourier transform](https://doi.org/10.1109/proc.1978.10837). *Proc. IEEE* 66, 51–83.
+- Trefethen & Weideman (2014). [The exponentially convergent trapezoidal rule](https://doi.org/10.1137/130932132). *SIAM Rev.* 56, 385–458.
+- Hicklin, Moler, Webb et al. [JAMA: A Java Matrix Package](https://math.nist.gov/javanumerics/jama/). NIST and MathWorks.
+- NIST. [Digital Library of Mathematical Functions, §10.9](https://dlmf.nist.gov/10.9) and [§10.32](https://dlmf.nist.gov/10.32).
+- Smith. [Quadratic interpolation of spectral peaks](https://ccrma.stanford.edu/~jos/sasp/Quadratic_Interpolation_Spectral_Peaks.html), in *Spectral Audio Signal Processing*.
+- W3C. [Web Audio API](https://www.w3.org/TR/webaudio/).
+
+### Data read through Leissa's book
+
+These values were read from [Leissa 1969](https://ntrs.nasa.gov/citations/19700009156), not from the originals. "Ref." is the reference number in the book. Reports with no online copy link to the book's listing.
+
+<details>
+<summary>Show all 21 sources</summary>
+
+- Lemke (1928). [Experimentelle Untersuchungen zur W. Ritzschen Theorie der Transversalschwingungen quadratischer Platten](https://doi.org/10.1002/andp.19283911304). *Ann. Phys.* 391, 717–750. Ref. 4.110.
+- Iguchi (1938). Die Eigenwertprobleme für die elastische rechteckige Platte. *Mem. Fac. Eng., Hokkaido Univ.*, 305–372. [Ref. 4.9](https://archive.org/details/DTIC_ADA307623).
+- Aronszajn (1950). The Rayleigh-Ritz and the Weinstein methods for approximation of eigenvalues, part III. Tech. Rept. 3, Oklahoma A&M College. [Ref. 4.49](https://archive.org/details/DTIC_ADA307623).
+- Young (1950). [Vibration of rectangular plates by the Ritz method](https://doi.org/10.1115/1.4010175). *J. Appl. Mech.* 17, 448–453. Ref. 4.47.
+- Barton (1951). [Vibration of rectangular and skew cantilever plates](https://doi.org/10.1115/1.4010265). *J. Appl. Mech.* 18, 129–134. Ref. 4.73.
+- Kanazawa & Kawai (1952). On the lateral vibration of anisotropic rectangular plates. *Proc. 2nd Jap. Natl. Congr. Appl. Mech.*, 333–338. [Ref. 4.16](https://archive.org/details/DTIC_ADA307623).
+- Iguchi (1953). [Die Eigenschwingungen und Klangfiguren der vierseitig freien rechteckigen Platte](https://doi.org/10.1007/bf00535853). *Ingenieur-Archiv* 21, 303–322. Ref. 4.113.
+- Wilson & Plunkett (1953). Vibration of cantilever plates with rectangular and wedge-shaped cross-sections. Report DF 53GL17, General Electric. [Ref. 4.85](https://archive.org/details/DTIC_ADA307623).
+- Gustafson, Stokey & Zorowski (1954). [The effect of tip removal on the natural vibrations of uniform cantilevered triangular plates](https://doi.org/10.2514/8.3148). *J. Aeronaut. Sci.* 21, 621–633. Ref. 4.87.
+- Heiba (1954). Vibration characteristics of a cantilever plate with sweptback leading edge. Report 82, Cranfield College of Aeronautics. [Ref. 4.83](https://archive.org/details/DTIC_ADA307623).
+- Ödman (1955). Studies of boundary value problems, part II: characteristic functions of rectangular plates. Proc. NR 24, Swedish Cement and Concrete Research Institute. [Ref. 4.13](https://archive.org/details/DTIC_ADA307623).
+- Dill & Pister (1958). Vibration of rectangular plates and plate systems. *Proc. 3rd U.S. Natl. Congr. Appl. Mech.*, 123–132. [Ref. 4.24](https://archive.org/details/DTIC_ADA307623).
+- Gontkevich (1960). The lower bounds of natural frequencies of a plate in flexural vibrations. *Prikl. Mekh.* 6, 346–350. [Ref. 4.55](https://archive.org/details/DTIC_ADA307623).
+- Claassen & Thorne (1961). [Vibrations of thin rectangular isotropic plates](https://doi.org/10.1115/1.3641676). *J. Appl. Mech.* 28, 304–305. Refs. 4.35 and 4.36.
+- Plunkett (1963). [Natural frequencies of uniform and non-uniform rectangular cantilever plates](https://doi.org/10.1243/jmes_jour_1963_005_020_02). *J. Mech. Eng. Sci.* 5, 146–156. Ref. 4.84.
+- Craig, Plass & Caughfield (1964). Experimental determination of frequencies and mode shapes of cantilever and hub-pin plates. Report DRL-518, University of Texas. [Ref. 4.86](https://archive.org/details/DTIC_ADA307623).
+- Gontkevich (1964). Natural Vibrations of Plates and Shells. Naukova Dumka. [Ref. 4.51](https://archive.org/details/DTIC_ADA307623).
+- Bazley, Fox & Stadter (1965). Upper and lower bounds for frequencies of rectangular cantilever plates. Tech. Memo TG-705, Johns Hopkins APL. [Ref. 4.75](https://archive.org/details/DTIC_ADA307623).
+- Sigillito (1965). Improved upper bounds for frequencies of rectangular free and cantilever plates. Eng. Memo EM-4012, Johns Hopkins APL. [Ref. 4.76](https://archive.org/details/DTIC_ADA307623).
+- Bazley, Fox & Stadter (1967). [Upper and lower bounds for the frequencies of rectangular clamped plates](https://doi.org/10.1002/zamm.19670470307). *ZAMM* 47, 191–198. Journal version of Ref. 4.58.
+- Bazley, Fox & Stadter (1967). [Upper and lower bounds for the frequencies of rectangular free plates](https://doi.org/10.1007/bf01601716). *ZAMP* 18, 445–460. Journal version of Ref. 4.118.
+
+</details>
