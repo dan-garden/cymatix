@@ -27,7 +27,9 @@ Run everything with `npm test`. Results on this page are in the tests unless it 
 | [patch.test.js](../patch.test.js) | 12 | Finite clamps against exact annular plates and experiments |
 | [nonlinear.test.js](../nonlinear.test.js) | 10 | Large-amplitude stiffening |
 | [grains.test.js](../grains.test.js) | 13 | Sand and powder transport |
-| [plateModel.test.js](../plateModel.test.js) | 11 | All of it working together |
+| [plateModel.test.js](../plateModel.test.js) | 13 | All of it working together |
+| [plateSurface.test.js](../plateSurface.test.js) | 7 | The plate's shape over a cycle, used by the 3D view |
+| [orbitCamera.test.js](../orbitCamera.test.js) | 7 | The 3D camera and picking |
 | [calibrate.test.js](../calibrate.test.js) | 4 | Fitting a plate to measurements |
 
 Where a printed value disagrees, an independent exact solution (scipy) or a measurement decides. In every such case it sides with the app.
@@ -338,6 +340,26 @@ The same fixed field and the same 60× run on both engines give the same pattern
 ### Numerical bug found on the way
 
 The integral for I_n sums terms about e^(n²/2x) times larger than the answer. Raising the circle limit to λ = 120 exposed it as false modes: 7851 found, about 1970 expected. A power series now takes over, and 1873 modes result. A sample of 74 roots agrees with scipy to 9×10⁻¹³. The old limit of λ = 50 stayed below where it started, so earlier results were safe.
+
+### 3D view
+
+The view draws existing results, so it adds no physics of its own and cannot make the model more accurate.
+
+| Check | Result | In tests |
+|---|---|---|
+| Slowly pushed clamped disc against `Fa²/16πD` (Timoshenko), in phase | Within 0.5 %, and 10⁻⁴ of that a quarter cycle later | Yes |
+| Plate at resonance | Lags the force by a quarter cycle, with under 5 % in phase | Yes |
+| Shape after one period, and two tones against each alone | Same within 10⁻⁵ | Yes |
+| Clamped rim, with air and true Mindlin modes | Under 2 % of peak one grid cell from the edge | Yes |
+| Heap volume against the grains' volume | Conserved to 10⁻¹² | Yes |
+| 3D from almost straight above at ×1, against the 2D image, same grains | Correlation 0.990 over 5041 blocks | No, browser check |
+| Clicking the 3D plate at (0.4, 0.3) | Driver at r = 0.50, 37°, target 0.50, 36.9° | No, browser check |
+
+Picking uses the plate at rest, so a click on a highly magnified surface lands slightly off.
+
+### Bug found by the 3D view
+
+Solved plates were reused by a key that left out the edge type, Poisson's ratio and aspect ratio. In the app, a plate with the same thickness ratio as an earlier one could silently take that plate's modes: the Clamped drum preset ran at 597 Hz, a free plate's frequency, instead of 1433 Hz. The 3D view exposed it, because the clamped rim visibly moved. The key now holds every input to the solve, and a test checks it. Published results were not affected, since the tests always solve fresh, but the earlier gallery and demo showed the wrong clamped plate and have been replaced.
 
 ### Calibration
 

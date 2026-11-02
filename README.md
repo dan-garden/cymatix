@@ -13,6 +13,7 @@
 - **Real surroundings:** air, vacuum or water.
 - **Real grains:** sand, fine sand, salt or lycopodium powder, moving at speeds calculated in real units.
 - **Millions of grains:** runs on the GPU with WebGL2, and falls back to the CPU.
+- **3D view:** orbit the plate as it really bends, in slow motion, with the true phase and the height magnification shown on screen.
 - **Calibration:** enter resonances you measured, and it fits the model to your plate.
 - **Ten presets:** including a plate from a [published experiment](https://doi.org/10.3390/e24020215).
 - **Mode explorer:** click any natural mode to hear its exact frequency and see its pattern.
@@ -33,6 +34,7 @@ Then open <http://localhost:5173> and click a preset.
 
 - The microphone only works on `localhost` or HTTPS.
 - Click the plate to move the driver.
+- The **2D / 3D** buttons switch views. In 3D, drag or use the arrow keys to rotate and scroll to zoom.
 - **Reset all** restores every default, and so does reloading the page.
 - `npm test` runs the physics checks.
 - `npm run build` writes the site to `dist/`, and `npm run preview` serves that build.
@@ -82,10 +84,12 @@ Every formula and where it comes from. Each module is a separate file, listed un
 | Fine powder | Air drag over the vibrating plate, plus acoustic streaming, which carry light grains to antinodes under strong drive | Derived here, direction from [Faraday 1831](https://doi.org/10.1098/rstl.1831.0018) |
 | Crowding | A cell holds about three layers of grains. Above that, grains jostle outwards until it no longer overflows | Modelling choice, not measured |
 | Materials | Each preset names a grade and links its datasheet | [materials.js](materials.js) |
+| 3D shape | `w(x,t) = Σ Re[W_j·e^{iω_j·t}]` from the same modal fields as everything else, slowed so the strongest tone shows one cycle per second | Follows from the modal sum, checked against [Timoshenko & Woinowsky-Krieger 1959](https://archive.org/details/theoryofplatessh0000timo_r3s0) |
+| 3D sand heaps | Height from volume conservation, `n·(π/6)D³ = height·packing·cell²` | Modelling choice, not measured |
 
 ## How accurate is it?
 
-`npm test` runs 105 tests. The tables below are the summary. [docs/validation.md](docs/validation.md) has the full results, including errors found in the reference book.
+`npm test` runs 121 tests. The tables below are the summary. [docs/validation.md](docs/validation.md) has the full results, including errors found in the reference book.
 
 ### Against real measurements
 
@@ -144,6 +148,8 @@ What the model still cannot claim:
 - **A finite clamp is an input, not a discovery.** It shifts axisymmetric modes by 1–22 % as r₀/a goes from 0.02 to 0.1. On Escaler's plate a 4 mm clamp predicts the inner circles but moves frequencies to +3 to +5 %, which would need a plate about 5 % thinner or softer. That is unverified, so the default stays a point.
 - **Thick plates are Mindlin, not 3D.** The remaining error against 3D elasticity is up to 1.7 % at h/a = 0.1 and grows with thickness.
 - **Two of Waller's nodal circles don't fit.** Her outermost circles at 5–6 circles sit 0.012–0.021 r/a beyond theory. Exact Mindlin and 3D rule out thickness: they move these by under 0.0002 r/a. The two values lie within 0.0034 of an old approximate formula (Leissa eq. 2.19), so they may have been computed rather than measured. Only her paper can settle that, and it could not be read.
+- **The 3D view magnifies height.** Real motion is microns, so a plate at ×5,000 is not what the eye would see. The factor is always on screen, and ×1 shows true scale. Sand heaps stay true to scale, and grains are not drawn in mid-hop.
+- **Several tones in 3D are not phase-accurate.** The spectrum gives no phase between tones, so they all start in phase. A single tone is exact. Tones more than about 30 times the strongest one alias at 60 frames per second.
 - **Very large thin plates still have a frequency limit.** A 1 m × 1 mm square now reaches 6.8 kHz, up from 900 Hz, after about a minute in worker threads.
 - **Bolted resonances depend slightly on the mode count.** Escaler's sixth resonance moves by 0.6 % as more modes are added, even with the high-mode term.
 - **Your inputs still matter most.** A 2 % thickness or stiffness error shifts every resonance by 1–2 %. Measure your plate, or use the calibration tool.
@@ -162,6 +168,9 @@ What the model still cannot claim:
 - [nonlinear.js](nonlinear.js): large-amplitude stiffening.
 - [grains.js](grains.js): sand and powder transport.
 - [sandGL.js](sandGL.js): the GPU grain engine.
+- [plateSurface.js](plateSurface.js): the plate's true shape at an instant, as pure physics.
+- [orbitCamera.js](orbitCamera.js): a camera and controls for any 3D scene.
+- [plateView3D.js](plateView3D.js): draws the plate in 3D.
 - [calibrate.js](calibrate.js): fitting a plate to measurements.
 - [materials.js](materials.js): material presets with sources.
 - [solvePlan.js](solvePlan.js), [solverPool.js](solverPool.js), [solver.worker.js](solver.worker.js): solving off the main thread.

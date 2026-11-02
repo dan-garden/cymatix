@@ -4,6 +4,9 @@ import { AIR, VACUUM, WATER } from './fluid.js';
 import { mindlinNodalRadii } from './mindlin.js';
 import { AIR as GRAIN_AIR, SPECIES, cellCapacity, grainMass, newFields, stepGrains, transportFields, updateCrowding } from './grains.js';
 import { createSandGL } from './sandGL.js';
+import { createOrbitCamera, orbitControls, pickPlane } from './orbitCamera.js';
+import { createPlateView3D } from './plateView3D.js';
+import { autoExaggeration, deflectionAt, heapHeightPerGrain, peakDeflection } from './plateSurface.js';
 import { runPlan, solvePlan } from './solvePlan.js';
 import { MATERIALS } from './materials.js';
 import { cancelGroup, runInGroup, runTask } from './solverPool.js';
@@ -456,8 +459,10 @@ const MAX_STEPS_PER_FRAME = { gpu: 16, cpu: 4 };
 const sandRandom = Uint32Array.of(12345);
 let transport = null;
 let gpuFields = null;
+let currentDrives = []; // this frame's per-drive deflection in metres
 
 const grainSpecies = () => SPECIES[$('grainType').value];
+const metresPerUnit = () => (plate.circle ? activeConfig.d / 2 : Math.max(activeConfig.Lx, activeConfig.Ly) / 2);
 
 function updateTransport() {
   const { G } = plate;
@@ -465,12 +470,12 @@ function updateTransport() {
     transport = newFields(G);
     gpuFields = new Float32Array(G * G * 4);
   }
-  const { h, E, rho, nu, d, Lx, Ly } = activeConfig;
-  const unit = plate.circle ? d / 2 : Math.max(Lx, Ly) / 2; // metres per plate unit
+  const { h, E, rho, nu } = activeConfig;
+  currentDrives = plate.deflections(gain, num('g'));
   transportFields({
     G,
-    drives: plate.deflections(gain, num('g')),
-    plate: { h, unit, E, rho, nu },
+    drives: currentDrives,
+    plate: { h, unit: metresPerUnit(), E, rho, nu },
     grain: grainSpecies(),
     fluid: $('fluid').value === 'vacuum' ? null : GRAIN_AIR,
     g: num('g'),
@@ -495,9 +500,7 @@ function moveSand(dt) {
   const limit = sandGL ? MAX_STEPS_PER_FRAME.gpu : MAX_STEPS_PER_FRAME.cpu;
   const steps = clamp(Math.ceil(simTime / MAX_SIM_STEP), 1, limit);
   const { circle, hx, hy, G } = plate;
-  const { d, Lx, Ly } = activeConfig;
-  const unit = circle ? d / 2 : Math.max(Lx, Ly) / 2;
-  const capacity = cellCapacity(grainSpecies(), G, unit);
+  const capacity = cellCapacity(grainSpecies(), G, metresPerUnit());
   if (sandGL) sandGL.updateCrowding(grainCount, capacity);
   else updateCrowding(grainX, grainY, grainCount, transport, G, capacity);
   for (let i = 0; i < steps; i++) {
@@ -527,11 +530,13 @@ const GAMMA_COLORS = Uint32Array.from({ length: 512 }, (_, i) => { // dimmed hal
 });
 let size = 0; // canvas side in device pixels
 let image, pixels, grainDensity, basePixels, onPlate, sandColors;
+let marksKey = null; // what the marks canvas shows now
 
 function resize() {
   const box = $('stage').getBoundingClientRect();
   const cssSize = Math.max(120, Math.floor(Math.min(box.width, box.height) - 20));
   size = Math.min(1400, Math.round(cssSize * devicePixelRatio));
+  marksKey = null; // resizing a canvas clears it
   for (const canvas of [plateCanvas, marksCanvas]) {
     canvas.width = size;
     canvas.height = size;
@@ -654,17 +659,84 @@ function drawDriver(half) {
   marksCtx.stroke();
 }
 
-function renderPlate() {
+function updateMarks(half) {
+  const key = [size, plate.circle, plate.hx, plate.hy, plate.edges, plate.du, plate.dv, $('showDrive').checked].join();
+  if (key === marksKey) return;
+  marksKey = key;
+  marksCtx.clearRect(0, 0, size, size);
+  if (!plate.circle) drawSupports(half);
+  if ($('showDrive').checked) drawDriver(half);
+  plateView?.setMarks(marksCanvas);
+}
+
+function renderPlate(dt) {
   const half = size / 2;
+  updateMarks(half);
   if (sandGL) {
-    sandGL.draw(grainCount, { grainSize: grainPixels(), showMap: $('overlay').checked, mapTop: Math.max(2, peakGamma) });
+    const showMap = $('overlay').checked;
+    sandGL.draw(grainCount, { grainSize: grainPixels(), showMap, mapTop: Math.max(2, peakGamma), offscreen: viewIn3D });
+    if (viewIn3D) drawPlateIn3D(dt);
   } else {
     countGrains(half);
     paintPixels();
   }
-  marksCtx.clearRect(0, 0, size, size);
-  if (!plate.circle) drawSupports(half);
-  if ($('showDrive').checked) drawDriver(half);
+}
+
+// ---------- 3D view ----------
+
+const ONE_CYCLE_PER_SECOND = 1;
+const camera = createOrbitCamera();
+const plateView = sandGL && createPlateView3D(sandGL.gl);
+const stillMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let viewIn3D = false;
+let plateTime = 0; // seconds of plate motion, slowed so that the strongest tone shows one cycle per second
+let deflection = new Float32Array(0);
+let exaggeration = 1;
+
+function setView(in3D) {
+  viewIn3D = in3D;
+  document.body.dataset.view = in3D ? '3d' : '2d';
+  $('view2D').classList.toggle('on', !in3D);
+  $('view3D').classList.toggle('on', in3D);
+  plateCanvas.tabIndex = in3D ? 0 : -1;
+  plateCanvas.setAttribute('aria-label', in3D
+    ? 'Simulated vibrating plate in 3D. Drag or use the arrow keys to rotate, scroll to zoom, click to move the driver.'
+    : 'Simulated vibrating plate covered in sand. Click to move the driver.');
+}
+
+function drawPlateIn3D(dt) {
+  const { G, circle, hx, hy, edge } = plate;
+  const unit = metresPerUnit();
+  const strongest = currentDrives[0];
+  if (strongest) {
+    const period = 2 * Math.PI / strongest.omega;
+    // shortcut: phase drifts for a tone that wanders, as time grows; reset plateTime if long runs ever flicker
+    plateTime = stillMotion.matches ? period / 4 : plateTime + dt * ONE_CYCLE_PER_SECOND * period;
+  }
+  if (deflection.length !== G * G) deflection = new Float32Array(G * G);
+  deflectionAt(currentDrives, plateTime, deflection, edge);
+
+  const chosen = $('heightScale').value;
+  if (chosen !== 'auto') exaggeration = +chosen;
+  else if (strongest) exaggeration = autoExaggeration(peakDeflection(currentDrives), unit);
+
+  plateView.draw({
+    camera,
+    grid: G,
+    deflection,
+    deflectionScale: exaggeration / unit,
+    heapScale: heapHeightPerGrain(grainSpecies(), G, unit) / unit,
+    image: sandGL.image,
+    counts: sandGL.counts,
+    circle,
+    hx,
+    hy,
+    background: hexToRgb($('bg').value).map(value => value / 255),
+    size,
+  });
+  const slowed = strongest ? ` · slowed ×${Math.round(strongest.omega / (2 * Math.PI * ONE_CYCLE_PER_SECOND)).toLocaleString('en')}` : '';
+  const info = `height ×${exaggeration.toLocaleString('en')}${slowed}`;
+  if ($('viewInfo').textContent !== info) $('viewInfo').textContent = info;
 }
 
 // ---------- spectrum rendering ----------
@@ -868,7 +940,7 @@ function frame(now) {
   if (sandGL) uploadFields();
   if (!paused) moveSand(dt);
   prepareStiffeningIfNeeded();
-  renderPlate();
+  renderPlate(dt);
   drawSpectrum();
   if (++frameCount % 6 === 0) updateReadout();
   requestAnimationFrame(frame);
@@ -916,14 +988,29 @@ listen('pause', 'click', () => {
   $('pause').textContent = paused ? 'Resume' : 'Pause';
   $('pause').classList.toggle('on', paused);
 });
-plateCanvas.addEventListener('click', e => {
-  const box = plateCanvas.getBoundingClientRect();
-  const u = (e.clientX - box.left) / box.width * 2 - 1;
-  const v = (e.clientY - box.top) / box.height * 2 - 1;
+function moveDriverTo(u, v) {
   $('dr').value = Math.min(DRIVER_LIMIT, Math.hypot(u, v));
   $('da').value = Math.atan2(v, u) * 180 / Math.PI;
   for (const id of ['dr', 'da']) $(id).dispatchEvent(new Event('input', { bubbles: true }));
+}
+plateCanvas.addEventListener('click', e => {
+  if (viewIn3D) return; // orbitControls handles clicks there, to tell them from drags
+  const box = plateCanvas.getBoundingClientRect();
+  moveDriverTo((e.clientX - box.left) / box.width * 2 - 1, (e.clientY - box.top) / box.height * 2 - 1);
 });
+if (plateView) {
+  $('viewBar').hidden = false;
+  orbitControls(plateCanvas, camera, {
+    isActive: () => viewIn3D,
+    onClick: (x, y) => {
+      // shortcut: picks the plate at rest, so a click is slightly off where the magnified surface is high
+      const hit = pickPlane(camera, x, y);
+      if (hit && plate.contains(...hit)) moveDriverTo(...hit);
+    },
+  });
+  listen('view2D', 'click', () => setView(false));
+  listen('view3D', 'click', () => setView(true));
+}
 new ResizeObserver(resize).observe($('stage'));
 
 // ---------- reset and presets ----------

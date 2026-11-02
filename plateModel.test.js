@@ -177,3 +177,35 @@ test('the whole chain collects sand onto the nodal lines, in real time units', (
   const after = quietShare(x, y);
   assert.ok(after > 0.8 && after > before + 0.3, `after 200 s, ${after} of grains are where Γ < 2 (started at ${before})`);
 });
+
+test('a solved plate is only reused for the same plate: every input to the solve is in its key', () => {
+  const circle = { shape: 'circle', bc: 'free', ...ALUMINIUM, h: 0.002, d: 0.24, Lx: 0.3, Ly: 0.3, zeta: 0.01, fmax: 8000, G: 32 };
+  const rect = { ...circle, shape: 'rect', h: 0.005, edges: ['free', 'free', 'free', 'free'] };
+  const largeThin = { ...rect, h: 0.001, Lx: 1, Ly: 1 };
+  const largeCircle = { ...circle, h: 0.0005, d: 1 };
+  const differ = (a, b) => assert.notEqual(solvePlan(a).id, solvePlan(b).id);
+  differ(circle, { ...circle, bc: 'clamped' });
+  differ(circle, { ...circle, nu: 0.3 });
+  differ(rect, { ...rect, edges: ['clamped', 'free', 'free', 'free'] });
+  differ(rect, { ...rect, nu: 0.3 });
+  differ(rect, { ...rect, Ly: 0.2 });
+  differ(largeThin, { ...largeThin, edges: ['clamped', 'free', 'free', 'free'] });
+  differ(largeThin, { ...largeThin, nu: 0.3 });
+  differ(largeCircle, { ...largeCircle, bc: 'clamped' });
+  assert.equal(solvePlan(circle).id, solvePlan({ ...circle, E: 100e9, zeta: 0.05 }).id, 'settings that do not change the shapes reuse the solve');
+});
+
+test('a clamped rim stays still in the full model, with air and true Mindlin modes', async () => {
+  const cfg = { shape: 'circle', bc: 'clamped', ...ALUMINIUM, h: 0.002, d: 0.24, Lx: 0.3, Ly: 0.3, zeta: 0.01, fmax: 4000, G: 96, mount: 'force', fluid: AIR };
+  const plate = new PlateModel();
+  plate.keepDrives = true;
+  plate.configure({ ...cfg, solved: await solveNow(cfg) });
+  plate.setDrive(0, -0.3);
+  plate.field([{ f: plate.modes.find(m => m.label === '(2,1)').f, F: 1 }], G0);
+  const [{ re, im }] = plate.deflections(1, G0);
+  const amplitude = q => Math.hypot(re[q], im[q]);
+  const peak = Math.max(...re.map((_, q) => amplitude(q)));
+  // the plate cells beside the edge, about one grid cell from a rim where w and its slope are zero
+  for (let k = 1; k < plate.edge.length; k += 2) assert.ok(amplitude(plate.edge[k]) < 0.02 * peak, `cell ${plate.edge[k]}`);
+});
+

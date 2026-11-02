@@ -21,6 +21,18 @@ vec4 fieldAt(vec2 p) { // bilinear, clamped to the grid
   return mix(bottom, top, a.y);
 }`;
 
+/** GLSL: the bilinear value of a single-channel G×G texture at plate coordinates, clamped to the grid. Needs uniform int uG. */
+export const GRID_VALUE = `
+float gridValue(sampler2D grid, vec2 p) {
+  float cells = float(uG) / 2.0, end = float(uG) - 1.001;
+  vec2 f = clamp((p + 1.0) * cells - 0.5, vec2(0.0), vec2(end));
+  ivec2 c = ivec2(f);
+  vec2 a = f - vec2(c);
+  float bottom = mix(texelFetch(grid, c, 0).r, texelFetch(grid, c + ivec2(1, 0), 0).r, a.x);
+  float top = mix(texelFetch(grid, c + ivec2(0, 1), 0).r, texelFetch(grid, c + ivec2(1, 1), 0).r, a.x);
+  return mix(bottom, top, a.y);
+}`;
+
 const STEP_FS = `#version 300 es
 precision highp float; precision highp int; precision highp sampler2D;
 uniform sampler2D uPos;
@@ -112,15 +124,7 @@ uniform float uSize;
 out vec4 outColor;
 uniform highp sampler2D uGamma; // R32F, the acceleration map
 uniform int uG;
-float gammaAt(vec2 p) { // bilinear, clamped to the grid
-  float cells = float(uG) / 2.0, end = float(uG) - 1.001;
-  vec2 f = clamp((p + 1.0) * cells - 0.5, vec2(0.0), vec2(end));
-  ivec2 c = ivec2(f);
-  vec2 a = f - vec2(c);
-  float bottom = mix(texelFetch(uGamma, c, 0).r, texelFetch(uGamma, c + ivec2(1, 0), 0).r, a.x);
-  float top = mix(texelFetch(uGamma, c + ivec2(0, 1), 0).r, texelFetch(uGamma, c + ivec2(1, 1), 0).r, a.x);
-  return mix(bottom, top, a.y);
-}
+${GRID_VALUE}
 void main() {
   // the canvas is bottom-up, the plate's coordinates and base image are top-down
   ivec2 pixel = ivec2(gl_FragCoord.x, uSize - gl_FragCoord.y);
@@ -131,7 +135,7 @@ void main() {
   }
   vec4 base = texelFetch(uBase, pixel, 0);
   if (uShowMap && base.a > 0.5) {
-    float g = gammaAt((vec2(pixel) + 0.5) / uSize * 2.0 - 1.0);
+    float g = gridValue(uGamma, (vec2(pixel) + 0.5) / uSize * 2.0 - 1.0);
     int shade = (g < 1.0 ? 0 : 256) + min(255, int(g / uMapTop * 255.0));
     outColor = texelFetch(uMap, ivec2(shade, 0), 0);
     return;
@@ -139,7 +143,7 @@ void main() {
   outColor = vec4(base.rgb, 1.0);
 }`;
 
-function compile(gl, vertexSource, fragmentSource) {
+export function compile(gl, vertexSource, fragmentSource) {
   const shader = (type, source) => {
     const s = gl.createShader(type);
     gl.shaderSource(s, source);
@@ -161,7 +165,7 @@ function compile(gl, vertexSource, fragmentSource) {
   return { program, uniforms };
 }
 
-function makeTexture(gl, internalFormat, format, type, width, height, data = null) {
+export function makeTexture(gl, internalFormat, format, type, width, height, data = null) {
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -195,8 +199,8 @@ export function createSandGL(canvas) {
   const show = compile(gl, QUAD_VS, SHOW_FS);
   gl.bindVertexArray(gl.createVertexArray());
 
-  const textures = { field: null, gamma: null, base: null, sand: null, map: null, density: null, counts: null };
-  let countsTarget = null, capacity = 1;
+  const textures = { field: null, gamma: null, base: null, sand: null, map: null, density: null, counts: null, image: null };
+  let countsTarget = null, imageTarget = null, capacity = 1;
   let G = 0, size = 0, side = 0, frame = 0, densityTarget = null;
   let positions = []; // [{ texture, target }, { texture, target }], swapped every step
 
@@ -212,10 +216,20 @@ export function createSandGL(canvas) {
   }
 
   return {
+    gl,
+
+    /** The finished image and the grain counts, for views that build on them. */
+    get image() { return textures.image; },
+    get counts() { return textures.counts; },
+
     resize(newSize) {
       size = newSize;
       replace('density', gl.R16F, gl.RED, gl.HALF_FLOAT, size, size);
       densityTarget = makeTarget(gl, textures.density);
+      replace('image', gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, size, size);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      imageTarget = makeTarget(gl, textures.image);
     },
 
     /** Upload grain positions in plate coordinates [-1, 1]. */
@@ -302,8 +316,8 @@ export function createSandGL(canvas) {
       positions = [to, from];
     },
 
-    /** Splat grains into the density texture and colour the canvas. */
-    draw(grainCount, { grainSize, showMap, mapTop }) {
+    /** Splat grains into the density texture and colour the canvas, or with offscreen the image texture instead. */
+    draw(grainCount, { grainSize, showMap, mapTop, offscreen = false }) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, densityTarget);
       gl.viewport(0, 0, size, size);
       gl.clearColor(0, 0, 0, 0);
@@ -318,7 +332,7 @@ export function createSandGL(canvas) {
       gl.uniform1f(u.get('uGrainSize'), grainSize);
       gl.drawArrays(gl.POINTS, 0, grainCount);
 
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, offscreen ? imageTarget : null);
       gl.viewport(0, 0, size, size);
       gl.disable(gl.BLEND);
       gl.useProgram(show.program);
@@ -333,6 +347,10 @@ export function createSandGL(canvas) {
       gl.uniform1f(u.get('uMapTop'), mapTop);
       gl.uniform1f(u.get('uSize'), size);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (offscreen) { // mipmaps stop single grains shimmering when the plate is seen at an angle
+        gl.bindTexture(gl.TEXTURE_2D, textures.image);
+        gl.generateMipmap(gl.TEXTURE_2D);
+      }
     },
 
     /** Current grain positions, for statistics and tests. Slow: reads the texture back. */

@@ -11,15 +11,20 @@ const THICK_RECT = 0.01;
 const LAM_INLINE = 50;
 const MINDLIN_MAX_BASIS = [22, 28, 34]; // by symmetric axes: about 8 s at the top
 
+// A solved plate is reused by this key, so it holds every input to the solve: nothing else can tell two plates apart.
+const planId = (task, args) => JSON.stringify([task, args]);
+
 function circlePlan(cfg) {
   const { bc, nu, h, d, mindlin } = cfg;
   const lamMax = circleLamFor(cfg);
   const hOverA = h / (d / 2);
   if (mindlin !== false && hOverA >= THICK_CIRCLE) {
-    return { id: `m${hOverA}|${lamMax}`, thick: true, lamMax, task: 'mindlinCircleModes', args: [bc, nu, hOverA, lamMax] };
+    const args = [bc, nu, hOverA, lamMax];
+    return { id: planId('mindlinCircleModes', args), thick: true, lamMax, task: 'mindlinCircleModes', args };
   }
   if (lamMax <= LAM_INLINE) return null;
-  return { id: `t${lamMax}`, lamMax, task: 'circleModes', args: [bc, nu, lamMax] };
+  const args = [bc, nu, lamMax];
+  return { id: planId('circleModes', args), lamMax, task: 'circleModes', args };
 }
 
 function rectPlan(cfg) {
@@ -30,10 +35,12 @@ function rectPlan(cfg) {
   if (mindlin !== false && h / Math.min(Lx, Ly) >= THICK_RECT) {
     const symAxes = (edges[0] === edges[1]) + (edges[2] === edges[3]);
     const nb = Math.min(MINDLIN_MAX_BASIS[symAxes], Math.max(wanted ?? 0, MINDLIN_BASIS[symAxes]));
-    return { id: `m${h / Lx}|${nb}`, thick: true, task: 'mindlinRectData', args: [edges, nu, beta, h / Lx, nb], edges, beta, nb };
+    const args = [edges, nu, beta, h / Lx, nb];
+    return { id: planId('mindlinRectData', args), thick: true, task: 'mindlinRectData', args, edges, beta, nb };
   }
   if (!wanted) return null;
-  return { id: `t${wanted}`, task: 'rectBlock', args: [edges, nu, beta, wanted], edges, nu, beta, nb: wanted };
+  const args = [edges, nu, beta, wanted];
+  return { id: planId('rectBlock', args), task: 'rectBlock', args, edges, nu, beta, nb: wanted };
 }
 
 /** The solve a plate should have, or null if the main thread's own answer is already right. */
