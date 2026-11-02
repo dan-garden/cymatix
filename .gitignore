@@ -1,1 +1,4 @@
 .claude/
+.vercel/
+dist/
+node_modules/

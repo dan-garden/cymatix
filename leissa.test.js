@@ -4,54 +4,67 @@
 // inconsistent with the rest of the book, the test says so and checks it against the corroborating source.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { circleModes, rectModes, nodalRadii, Plate } from './physics.js';
+import { circleModes, nodalRadii, Plate } from './physics.js';
+import { WALLER_RADII, elasticRectModes, findMode, forEachCell, median, nearest, pct, within } from './testkit.js';
 
-const pct = (got, want) => 100 * Math.abs(got / want - 1);
-const median = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
-const within = (pairs, maxPct, name) => pairs.forEach(([got, want, tag]) => assert.ok(pct(got, want) <= maxPct, `${name} ${tag ?? ''}: ${got} vs ${want}`));
-const L = (ms, n, s) => ms.find(m => m.n === n && m.m === s && m.L > 0).L;
-const radii = (ms, n, s) => nodalRadii(ms.find(m => m.n === n && m.m === s && m.L > 0)).reverse(); // outside in, as printed
+const L = (ms, n, s) => findMode(ms, n, s).L;
+const radii = (ms, n, s) => nodalRadii(findMode(ms, n, s)).reverse(); // outside in, as printed
+// Errors of a printed table of radii, indexed [s − 1][n], against ours.
+const radiusErrors = (ms, table) => {
+  const errors = [];
+  table.forEach((cols, s) => cols.forEach((printed, n) => {
+    const r = radii(ms, n, s + 1);
+    printed.forEach((x, k) => errors.push(Math.abs(r[k] - x)));
+  }));
+  return errors;
+};
 
 test('Leissa ch. 2: clamped circular plate, Tables 2.1 and 2.2', () => {
-  const ms = circleModes('clamped', 0.3, 40), pairs = [];
-  [[10.2158, 21.26, 34.88, 51.04], [39.771, 60.82, 84.58, 111.01], [89.104, 120.08, 153.81, 190.30], [158.183, 199.06, 242.71, 289.17], [247.005, 297.77, 351.38, 407.72],
-    [355.568, 416.20, 479.65, 545.97], [483.872, 554.37, 627.75, 703.95], [631.914, 712.30, 795.52, 881.67], [799.702, 889.95, 983.07, 1079.0], [987.216, 1087.4, 1190.4, 1296.2]]
-    .forEach((row, s) => row.forEach((v, n) => pairs.push([L(ms, n, s), v, `(${n},${s})`])));
-  [[69.6659, 90.7390, 114.2126, 140.0561, 168.2445, 198.7561, 231.5732, 266.6790, 304.0601, 343.7038, 385.5996], [140.1079, 171.8029, 206.0706, 242.8782, 282.1977, 324.0036, 368.2734],
-    [229.5186, 271.4283, 316.0015, 363.2097], [338.4113, 390.3896]].forEach((row, s) => row.forEach((v, i) => pairs.push([L(ms, i + 4, s), v, `(${i + 4},${s})`])));
+  const ms = circleModes('clamped', 0.3, 40);
+  const pairs = [];
+  const t21 = [[10.2158, 21.26, 34.88, 51.04], [39.771, 60.82, 84.58, 111.01], [89.104, 120.08, 153.81, 190.30], [158.183, 199.06, 242.71, 289.17], [247.005, 297.77, 351.38, 407.72],
+    [355.568, 416.20, 479.65, 545.97], [483.872, 554.37, 627.75, 703.95], [631.914, 712.30, 795.52, 881.67], [799.702, 889.95, 983.07, 1079.0], [987.216, 1087.4, 1190.4, 1296.2]];
+  forEachCell(t21, (v, s, n) => pairs.push([L(ms, n, s), v, `(${n},${s})`]));
+  const t22 = [[69.6659, 90.7390, 114.2126, 140.0561, 168.2445, 198.7561, 231.5732, 266.6790, 304.0601, 343.7038, 385.5996], [140.1079, 171.8029, 206.0706, 242.8782, 282.1977, 324.0036, 368.2734],
+    [229.5186, 271.4283, 316.0015, 363.2097], [338.4113, 390.3896]];
+  forEachCell(t22, (v, s, i) => pairs.push([L(ms, i + 4, s), v, `(${i + 4},${s})`]));
   assert.equal(pairs.length, 64);
   within(pairs, 0.03, 'λ²'); // median 0.001 %
-  const d = [];
-  [[[.379], [.4899], [.559], [.606], [.641], [.669]], [[.583, .255], [.640, .350], [.679, .414], [.708, .462], [.730, .501], [.749, .532]],
+  const d = radiusErrors(ms, [[[.379], [.4899], [.559], [.606], [.641], [.669]], [[.583, .255], [.640, .350], [.679, .414], [.708, .462], [.730, .501], [.749, .532]],
     [[.688, .439, .191], [.721, .497, .272], [.746, .540, .330], [.765, .574, .375], [.781, .601, .412], [.787, .618, .439]],
     [[.749, .550, .351, .153], [.767, .589, .407, .222], [.789, .620, .449, .274], [.803, .645, .488, .316]],
     [[.791, .625, .459, .293, .127], [.807, .653, .499, .344, .188]], [[.822, .678, .535, .393, .251, .109], [.833, .699, .566, .432, .298, .163]],
-    [[.844, .720, .593, .469, .344, .220, .096], [.853, .735, .617, .499, .381, .263, .144]]]
-    .forEach((cols, s) => cols.forEach((seen, n) => { const r = radii(ms, n, s + 1); seen.forEach((x, k) => d.push(Math.abs(r[k] - x))); }));
+    [[.844, .720, .593, .469, .344, .220, .096], [.853, .735, .617, .499, .381, .263, .144]]]);
   assert.equal(d.length, 88);
   assert.ok(median(d) < 0.001 && Math.max(...d) < 0.008, `radii: median ${median(d)}, max ${Math.max(...d)}`); // max is (5,3), whose printed .787 breaks its row's trend
 });
 
 test('Leissa ch. 2: simply supported circular plate, Tables 2.3 and 2.4', () => {
   // Table 2.3 is labelled ν = 0.3 but its values are the ν = 1/3 roots: 0.01 % median at 1/3, up to 0.84 % at 0.3
-  const at = nu => circleModes('simply', nu, 20), pairs = [];
-  [[4.977, 13.94, 25.65], [29.76, 48.51, 70.14], [74.20, 102.80, 134.33], [138.34, 176.84, 218.24]].forEach((row, s) => row.forEach((v, n) => pairs.push([L(at(1 / 3), n, s), v, `(${n},${s})`])));
+  const third = circleModes('simply', 1 / 3, 20);
+  const ms = circleModes('simply', 0.3, 20);
+  const pairs = [];
+  forEachCell([[4.977, 13.94, 25.65], [29.76, 48.51, 70.14], [74.20, 102.80, 134.33], [138.34, 176.84, 218.24]], (v, s, n) => {
+    pairs.push([L(third, n, s), v, `(${n},${s})`]);
+  });
   within(pairs, 0.15, 'λ² at ν = 1/3');
-  assert.ok(pct(L(at(0.3), 0, 0), 4.977) > 0.8, 'the ν = 0.3 fundamental would be 4.935');
-  const ms = at(0.3), d = [];
-  [[[.441], [.550], [.613]], [[.644, .279], [.692, .378], [.726, .443]], [[.736, .469, .204], [.765, .528, .288], [.787, .570, .348]]]
-    .forEach((cols, s) => cols.forEach((seen, n) => { const r = radii(ms, n, s + 1); seen.forEach((x, k) => d.push(Math.abs(r[k] - x))); }));
+  assert.ok(pct(L(ms, 0, 0), 4.977) > 0.8, 'the ν = 0.3 fundamental would be 4.935');
+  const d = radiusErrors(ms, [[[.441], [.550], [.613]], [[.644, .279], [.692, .378], [.726, .443]], [[.736, .469, .204], [.765, .528, .288], [.787, .570, .348]]]);
   assert.ok(Math.max(...d) < 0.003, `radii max ${Math.max(...d)}`);
 });
 
 test('Leissa ch. 2: completely free circular plate, Tables 2.5–2.7', () => {
-  const m33 = circleModes('free', 0.33, 42), m25 = circleModes('free', 0.25, 34);
+  const m33 = circleModes('free', 0.33, 42);
+  const m25 = circleModes('free', 0.25, 34);
   const t25 = [[null, null, 5.253, 12.23, 21.6, 33.1, 46.2], [9.084, 20.52, 35.25, 52.91, 73.1, 95.8, 121.0], [38.55, 59.86, 83.9, 111.3, 142.8, 175.0, 210.3],
     [87.80, 119.0, 154.0, 192.1, 232.3, 274.6, 319.7], [157.0, 198.2, 242.7, 290.7, 340.4, 392.4, 447.3], [245.9, 296.9, 350.8, 408.4, 467.9, 529.5, 593.9],
     [354.6, 415.3, 479.2, 546.2, 615.0, 686.4, 760.1], [483.1, 651.8, 627.0, 703.3, 781.8, 864.4, 952.3], [631.0, 711.3, 794.7, 880.3, 968.5, 1061, 1158.7],
     [798.6, 888.6, 981.6, 1076, 1175, 1277, 1384], [986.0, 1086, 1188, 1292, 1401, 1513, 1631]];
   const exact = [], rough = []; // footnote a: "values true within 2 percent" for n = 4–6, s = 0–1
-  t25.forEach((row, s) => row.forEach((v, n) => { if (v == null || (s === 7 && n === 1)) return; (n >= 4 && s <= 1 ? rough : exact).push([L(m33, n, s), v, `(${n},${s})`]); }));
+  forEachCell(t25, (v, s, n) => {
+    if (s === 7 && n === 1) return;
+    (n >= 4 && s <= 1 ? rough : exact).push([L(m33, n, s), v, `(${n},${s})`]);
+  });
   within(rough, 2, 'footnote-a cell');
   // this older table is good to a few tenths of a percent (median 0.13 %, worst 0.74 %): at (3,3) it even rises from
   // Table 2.6's ν = 0.25 value, while the exact roots fall with ν
@@ -60,17 +73,15 @@ test('Leissa ch. 2: completely free circular plate, Tables 2.5–2.7', () => {
   // (1,7) is printed 651.8, out of sequence; ours sits with Table 2.6's 553.00 for the same mode (ν = 0.25)
   assert.ok(pct(L(m33, 1, 7), 553.00) < 0.1, `(1,7): ${L(m33, 1, 7)}`);
   const t26 = [[null, null, 5.513, 12.75], [8.892, 20.41, 35.28, 53.16], [38.34, 59.74, 84.38, 112.36], [87.65, 118.88, 153.29, 191.02], [156.73, 196.67, 241.99, 289.51],
-    [245.52, 296.46, 350.48, 408.16], [354.08, 414.86, 478.73, 545.83], [482.37, 553.00, 626.75, 703.63], [630.41, 710.92, 794.51, 881.20], [798.23, 888.58, 982.01, 1078.5]], p26 = [];
-  t26.forEach((row, s) => row.forEach((v, n) => { if (v != null) p26.push([L(m25, n, s), v, `(${n},${s})`]); }));
+    [245.52, 296.46, 350.48, 408.16], [354.08, 414.86, 478.73, 545.83], [482.37, 553.00, 626.75, 703.63], [630.41, 710.92, 794.51, 881.20], [798.23, 888.58, 982.01, 1078.5]];
+  const p26 = [];
+  forEachCell(t26, (v, s, n) => p26.push([L(m25, n, s), v, `(${n},${s})`]));
   within(p26, 0.6, 'λ² ν = 0.25');
   assert.ok(median(p26.map(([g, w]) => pct(g, w))) < 0.02);
   // where Table 2.6 is off (its n = 3 column, 0.1–0.3 %), ours equals the exact frequency equation (eq. 2.14, scipy)
   assert.ok(pct(L(m25, 3, 2), 112.0142) < 0.005 && pct(L(m25, 3, 3), 190.7208) < 0.005);
   // Table 2.7 radii (ν = 0.33). Where ours and the printed value differ by more than 0.005, Waller's measured radius
   // (Table 2.9) must be closer to ours: the printed outer circles of s = 2–3, n ≥ 1 run high.
-  const waller = [[[.680], [.391, .843], [.257, .591, .895], [.190, .441, .692, .918]], [[.781], [.497, .867], [.349, .643, .902], [.269, .495, .726, .928]],
-    [[.823], [.562, .887], [.415, .681, .913], [.328, .540, .748, .934]], [[.843], [.604, .898], [.461, .706, .919], [.374, .571, .764, .938]],
-    [[.859], [.635, .906], [.505, .728, .925], [.411, .596, .779, .941]], [[.871], [.662, .915], [.531, .745, .933], [.443, .623, .794, .944]]];
   const t27 = [[[.680], [.781], [.822], [.847], [.863], [.881]], [[.841, .391], [.871, .4972], [.8897, .562], [.925, .605], [.926, .635], [.993, .663]],
     [[.893, .591, .257], [.932, .643, .351], [.936, .678, .414], [.939, .704, .460], [.943, .726, .498], [.947, .745, .529]],
     [[.941, .691, .441, .192], [.946, .723, .498, .272], [.950, .746, .540, .330], [.951, .763, .572, .374], [.955, .779, .600, .411], [.958, .793, .623, .443]],
@@ -80,12 +91,22 @@ test('Leissa ch. 2: completely free circular plate, Tables 2.5–2.7', () => {
     const r = radii(m33, n, s + 1);
     printed.forEach((x, k) => {
       if (x == null) return;
-      if (Math.abs(r[k] - x) <= 0.005) return agree++;
-      const w = waller[n]?.[s]?.slice().reverse()[k]; // Waller lists inside out
+      if (Math.abs(r[k] - x) <= 0.005) {
+        agree++;
+        return;
+      }
+      const w = WALLER_RADII[n]?.[s]?.slice().reverse()[k]; // Waller lists inside out
       // s = 5 has no measurement for n ≥ 1; its printed outer circles sit 0.012–0.017 beyond exact theory, like the rest
       // of that column (and like Waller's s = 5–6, n = 0 outermost circles, while all his inner ones match within 0.004)
-      if (w === undefined && s === 4 && k === 0) { assert.ok(x - r[k] > 0 && x - r[k] < 0.02, `(${n},5) outer: ${r[k]} vs ${x}`); return outer5++; }
-      if (w === undefined) return assert.ok(n === 4 && s === 4 && k === 2, `unexplained (${n},${s + 1}) circle ${k + 1}: ${r[k]} vs ${x}`); // printed .644 repeats n = 3
+      if (w === undefined && s === 4 && k === 0) {
+        assert.ok(x - r[k] > 0 && x - r[k] < 0.02, `(${n},5) outer: ${r[k]} vs ${x}`);
+        outer5++;
+        return;
+      }
+      if (w === undefined) { // printed .644 repeats n = 3
+        assert.ok(n === 4 && s === 4 && k === 2, `unexplained (${n},${s + 1}) circle ${k + 1}: ${r[k]} vs ${x}`);
+        return;
+      }
       assert.ok(Math.abs(r[k] - w) < Math.abs(x - w), `(${n},${s + 1}) circle ${k + 1}: ours ${r[k]}, printed ${x}, measured ${w}`);
       sided++;
     });
@@ -103,19 +124,27 @@ const resonances = (cfg, targets) => {
   p.setDrive(0, 0);
   return targets.map(L2 => {
     const f0 = L2 * p.wScale / (2 * Math.PI);
-    let best = 0, fb = f0;
-    for (let f = f0 * 0.97; f < f0 * 1.03; f *= 1.00005) { const y = p.field([{ f, F: 1 }], 9.81); if (y > best) { best = y; fb = f; } }
-    return fb * 2 * Math.PI / p.wScale;
+    let best = 0, bestF = f0;
+    for (let f = f0 * 0.97; f < f0 * 1.03; f *= 1.00005) {
+      const y = p.field([{ f, F: 1 }], 9.81);
+      if (y > best) {
+        best = y;
+        bestF = f;
+      }
+    }
+    return bestF * 2 * Math.PI / p.wScale;
   });
 };
 
 test('Leissa ch. 2: point supports and a central mass, through the app\'s driver models', () => {
+  const compare = (cfg, targets, maxPct, name) => within(resonances(cfg, targets).map((g, i) => [g, targets[i]]), maxPct, name);
+  const heldAtCentre = bc => ({ shape: 'circle', bc, nu: 0.3, mount: 'rigid' });
   // free plate held at its centre (rigid bolt): exact roots of the point-support equation (solved in scipy, ν = 0.3)
-  within(resonances({ shape: 'circle', bc: 'free', nu: 0.3, mount: 'rigid' }, [3.752, 20.908, 60.645, 119.814]).map((g, i) => [g, [3.752, 20.908, 60.645, 119.814][i]]), 0.05, 'centre-fixed free plate');
+  compare(heldAtCentre('free'), [3.752, 20.908, 60.645, 119.814], 0.05, 'centre-fixed free plate');
   // Table 2.14 (exact column, ν = 0.3) and the text's centre-supported simply supported and clamped plates (3 figures)
-  within(resonances({ shape: 'circle', bc: 'free', nu: 0.3, mount: 'rigid' }, [3.73, 20.9, 60.5, 119.7]).map((g, i) => [g, [3.73, 20.9, 60.5, 119.7][i]]), 0.7, 'Table 2.14');
-  within(resonances({ shape: 'circle', bc: 'simply', nu: 0.3, mount: 'rigid' }, [14.8, 49.4]).map((g, i) => [g, [14.8, 49.4][i]]), 0.5, 'simply supported + centre support');
-  within(resonances({ shape: 'circle', bc: 'clamped', nu: 0.3, mount: 'rigid' }, [22.7, 61.9]).map((g, i) => [g, [22.7, 61.9][i]]), 0.5, 'clamped + centre support');
+  compare(heldAtCentre('free'), [3.73, 20.9, 60.5, 119.7], 0.7, 'Table 2.14');
+  compare(heldAtCentre('simply'), [14.8, 49.4], 0.5, 'simply supported + centre support');
+  compare(heldAtCentre('clamped'), [22.7, 61.9], 0.5, 'clamped + centre support');
   // Table 2.15: clamped plate with a mass μ·πρa² at the centre = the shaker model with that moving mass and no force.
   // Exact roots (point-mass Green's function J0, I0, Y0 + (2/π)K0, solved in scipy) are matched to 0.01 %; Leissa's
   // "precise values" are up to 0.34 % low on the second root.
@@ -130,13 +159,7 @@ test('Leissa ch. 2: point supports and a central mass, through the app\'s driver
 // Leissa's rectangle: 0 ≤ x ≤ a, 0 ≤ y ≤ b, x = 0 and x = a simply supported; λ = ωa²√(ρh/D), λ* = ωb²√(ρh/D) = λ(b/a)².
 const S = 'simply', C = 'clamped', F = 'free';
 const EDGES = { SCSC: [S, S, C, C], SCSS: [S, S, S, C], SCSF: [S, S, C, F], SSSF: [S, S, S, F], SFSF: [S, S, F, F] };
-const cache = new Map();
-const rect = (k, nu, beta) => {
-  const key = `${k}|${nu}|${beta}`;
-  if (!cache.has(key)) cache.set(key, rectModes(EDGES[k], nu, beta).modes.filter(m => m.L > 1e-3));
-  return cache.get(key);
-};
-const nearest = (vals, w) => vals.reduce((b, x) => Math.abs(x - w) < Math.abs(b - w) ? x : b);
+const rect = (k, nu, beta) => elasticRectModes(EDGES[k], nu, beta);
 
 test('Leissa ch. 4: SS–C–SS–C rectangles, Tables 4.3–4.8', () => {
   const sq = rect('SCSC', 0.3, 1).map(m => m.L);
@@ -145,8 +168,12 @@ test('Leissa ch. 4: SS–C–SS–C rectangles, Tables 4.3–4.8', () => {
   // T4.5/T4.8: rows m (half-waves along x), columns n (n-th root across y), printed to 0.1: matched within the mode's
   // symmetry class (x-parity of m, y-parity of n)
   const grid = (beta, rows, scale, name) => {
-    const ms = rect('SCSC', 0.3, beta), out = [];
-    rows.forEach((row, m) => row.forEach((v, n) => { if (v != null) out.push([nearest(ms.filter(q => q.px === m % 2 && q.py === n % 2).map(q => q.L * scale), v), v, `${name} (${m + 1},${n + 1})`]); }));
+    const ms = rect('SCSC', 0.3, beta);
+    const out = [];
+    forEachCell(rows, (v, m, n) => {
+      const sameClass = ms.filter(q => q.px === m % 2 && q.py === n % 2).map(q => q.L * scale);
+      out.push([nearest(sameClass, v), v, `${name} (${m + 1},${n + 1})`]);
+    });
     return out;
   };
   const g5 = grid(1, [[28.9, 69.2, 129.1, 208.6, 307.4, 426.1], [54.8, 94.6, 154.8, 234.5, 333.9, 452.9], [102.2, 140.2, 199.9, 279.5, 379.1, 498.4],
@@ -203,11 +230,15 @@ test('Leissa ch. 4: SS–C–SS–SS, SS–C–SS–F, SS–SS–SS–F and SS�
     1.333: '19.73(12) 51.93(22) 54.62(13) 91.81(23) 101.80(32) 123.56(14) 145.57(33)', 1.5: '21.62(12) 54.84(22) 65.79(13) 103.97(23) 105.16(32) 152.77(14) 159.16(33)',
     2: '27.52(12) 64.54(22) 105.48(13) 116.83(32) 146.90(23)' }]];
   const errs = [];
-  for (const [nu, byAspect] of tables) for (const [ab, row] of Object.entries(byAspect)) {
-    const ms = rect('SFSF', nu, 1 / +ab);
-    for (const tok of row.split(' ')) {
-      const [, v, m] = tok.match(/([\d.]+)\((\d)(\d)\)/), w = +v;
-      errs.push([pct(nearest(ms.filter(q => q.px === (+m - 1) % 2).map(q => q.L), w), w), `ν ${nu} a/b ${ab} ${tok}`]);
+  for (const [nu, byAspect] of tables) {
+    for (const [ab, row] of Object.entries(byAspect)) {
+      const ms = rect('SFSF', nu, 1 / +ab);
+      for (const tok of row.split(' ')) {
+        const [, v, m] = tok.match(/([\d.]+)\((\d)(\d)\)/);
+        const w = +v;
+        const sameClass = ms.filter(q => q.px === (+m - 1) % 2).map(q => q.L);
+        errs.push([pct(nearest(sameClass, w), w), `ν ${nu} a/b ${ab} ${tok}`]);
+      }
     }
   }
   assert.ok(errs.length > 200, `${errs.length} values`);

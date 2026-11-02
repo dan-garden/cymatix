@@ -12,23 +12,30 @@
 - **Three ways to drive it:** a point force, a shaker or a rigid bolt.
 - **Nine presets:** including a plate from a [published experiment](https://doi.org/10.3390/e24020215).
 - **Mode explorer:** click any natural mode to hear its exact frequency and see its pattern.
-- **Nothing to install:** plain JavaScript, no build step and no dependencies.
+- **Lightweight:** plain JavaScript with no runtime dependencies. Vite is the only development tool.
 
 ## Quick start
+
+You need Node 20.19+ or 22.12+.
 
 ```bash
 git clone https://github.com/dan-garden/cymatix.git
 cd cymatix
-npm start
+npm install
+npm run dev
 ```
 
-Then open <http://localhost:8137> and click a preset.
+Then open <http://localhost:5173> and click a preset.
 
-- `npm start` serves the folder with Python 3.
 - The microphone only works on `localhost` or HTTPS.
 - Click the plate to move the driver.
 - **Reset all** restores every default, and so does reloading the page.
-- `npm test` runs the physics checks. It needs Node.
+- `npm test` runs the physics checks.
+- `npm run build` writes the site to `dist/`, and `npm run preview` serves that build.
+
+## Deploying
+
+Import the repo into [Vercel](https://vercel.com). It detects Vite, so no settings or config file are needed.
 
 ## Gallery
 
@@ -121,6 +128,7 @@ How to read this:
 - [app.js](app.js): audio, sand and drawing.
 - [physics.js](physics.js): all the plate maths.
 - `*.test.js`: the checks against theory, measurements and Leissa's book.
+- [testkit.js](testkit.js): helpers shared by the tests.
 
 ## References
 

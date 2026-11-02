@@ -4,36 +4,39 @@
 // rigorous bound or the table's own trend, the test names it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rectModes } from './physics.js';
+import { elasticRectModes, forEachCell, median, nearest, pct, within } from './testkit.js';
 
 const C = 'clamped', S = 'simply', F = 'free';
 // edges in the solver's order [x = 0, x = a, y = 0, y = b]; λ = ωa²√(ρh/D) with a along x; β = b/a
 const EDGES = { CCCC: [C, C, C, C], CCCS: [C, C, C, S], CCSS: [C, S, C, S], CCFF: [C, F, C, F], CFCF: [C, C, F, F], CFSF: [C, S, F, F], CFFF: [C, F, F, F], FFFF: [F, F, F, F] };
-const cache = new Map();
-const modes = (k, nu, beta, nb) => {
-  const key = `${k}|${nu}|${beta}|${nb}`;
-  if (!cache.has(key)) cache.set(key, rectModes(EDGES[k], nu, beta, nb).modes.filter(m => m.L > 1e-3));
-  return cache.get(key);
-};
-const L = (k, nu, beta, px = -1, py = -1, nb) => modes(k, nu, beta, nb).filter(m => (px < 0 || m.px === px) && (py < 0 || m.py === py)).map(m => m.L);
-const pct = (g, w) => 100 * Math.abs(g / w - 1);
-const near = (arr, w) => arr.reduce((b, x) => Math.abs(x - w) < Math.abs(b - w) ? x : b);
-const within = (pairs, maxPct, name) => pairs.forEach(([g, w, tag]) => assert.ok(pct(g, w) <= maxPct, `${name} ${tag ?? ''}: ours ${g} vs ${w}`));
-const inBounds = (g, lo, hi, tag) => assert.ok(g >= lo * (1 - 2e-5) && g <= hi * (1 + 2e-4), `${tag}: ${g} not in [${lo}, ${hi}]`); // bounds are printed to 5 figures
-const median = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+const L = (k, nu, beta, px = -1, py = -1, nb) => elasticRectModes(EDGES[k], nu, beta, nb)
+  .filter(m => (px < 0 || m.px === px) && (py < 0 || m.py === py))
+  .map(m => m.L);
+// bounds are printed to 5 figures
+const inBounds = (g, lo, hi, tag) => assert.ok(g >= lo * (1 - 2e-5) && g <= hi * (1 + 2e-4), `${tag}: ${g} not in [${lo}, ${hi}]`);
+// Row i of `bounds` brackets the i-th computed frequency; a null row is skipped.
+const checkBounds = (computed, bounds, label) => bounds.forEach((bound, i) => {
+  if (bound) inBounds(computed[i], bound[0], bound[1], `${label} #${i + 1}`);
+});
 
 test('Leissa ch. 4: C-C-C-C, Tables 4.22–4.32 (including the rigorous bounds of Bazley, Fox & Stadter and Aronszajn)', () => {
   const sq = L('CCCC', 0.3, 1);
-  within([35.9866, 73.40, 108.22, 132.18, 164.99].map(v => [near(sq, v), v]), 0.03, 'T4.22 Tomotika/Iguchi');
-  within([35.99, 73.41, 108.27, 131.64, 132.25, 165.15].map(v => [near(sq, v), v]), 0.1, 'T4.22 Young');
+  within([35.9866, 73.40, 108.22, 132.18, 164.99].map(v => [nearest(sq, v), v]), 0.03, 'T4.22 Tomotika/Iguchi');
+  within([35.99, 73.41, 108.27, 131.64, 132.25, 165.15].map(v => [nearest(sq, v), v]), 0.1, 'T4.22 Young');
   // T4.25: fourfold-symmetric modes, lower bound and 50-term upper bound
   const ds = L('CCCC', 0.3, 1, 0, 0);
-  [[35.982, 35.986], [132.18, 132.21], [219.73, 220.04], [309.08, 309.17], [393.00, 393.92], [558.58, 562.18], [565.39, 565.54], [646.62, 648.46], [806.51, 814.48], [900.70, 900.97],
-    [979.55, 982.93], [1017.5, 1062.5], [1127.4, 1147.1], [1235.1, 1315.4], [1314.9, 1393.4]].forEach(([lo, hi], i) => // a doubly symmetric mode inside each bracket
-    inBounds(ds.find(x => x >= lo * (1 - 2e-5) && x <= hi * (1 + 2e-4)) ?? NaN, lo, hi, `T4.25 #${i + 1}`));
+  const t425 = [[35.982, 35.986], [132.18, 132.21], [219.73, 220.04], [309.08, 309.17], [393.00, 393.92], [558.58, 562.18], [565.39, 565.54], [646.62, 648.46], [806.51, 814.48], [900.70, 900.97],
+    [979.55, 982.93], [1017.5, 1062.5], [1127.4, 1147.1], [1235.1, 1315.4], [1314.9, 1393.4]];
+  t425.forEach(([lo, hi], i) => { // a doubly symmetric mode inside each bracket
+    inBounds(ds.find(x => x >= lo * (1 - 2e-5) && x <= hi * (1 + 2e-4)) ?? NaN, lo, hi, `T4.25 #${i + 1}`);
+  });
   // T4.26 (Aronszajn): bounds per symmetry class
-  [[0, 0, 35.9693, 36.1074], [0, 0, 131.55, 133.20], [0, 0, 131.8, 134.1], [0, 0, 218, 231], [0, 1, 73.354, 74.226], [0, 1, 164.39, 171.39], [0, 1, 210, 216],
-    [1, 1, 108.119, 109.936], [1, 1, 241.924, 246.118], [1, 1, 242.071, 251.033]].forEach(([px, py, lo, hi], i) => inBounds(L('CCCC', 0.3, 1, px, py).find(x => x >= lo * 0.999 && x <= hi * 1.001) ?? NaN, lo, hi, `T4.26 #${i + 1}`));
+  const t426 = [[0, 0, 35.9693, 36.1074], [0, 0, 131.55, 133.20], [0, 0, 131.8, 134.1], [0, 0, 218, 231], [0, 1, 73.354, 74.226], [0, 1, 164.39, 171.39], [0, 1, 210, 216],
+    [1, 1, 108.119, 109.936], [1, 1, 241.924, 246.118], [1, 1, 242.071, 251.033]];
+  t426.forEach(([px, py, lo, hi], i) => {
+    const mode = L('CCCC', 0.3, 1, px, py).find(x => x >= lo * 0.999 && x <= hi * 1.001) ?? NaN;
+    inBounds(mode, lo, hi, `T4.26 #${i + 1}`);
+  });
   // T4.32: first 15 doubly symmetric modes for b/a = 1 … 8 (b/a = 4, mode 3 prints lower 35.214 > upper 25.297: skipped)
   const t432 = { 1: [[35.976, 35.985], [131.50, 131.58], [132.13, 132.21], [219.08, 220.06], [308.60, 308.91], [308.99, 309.17], [388.74, 392.85], [391.40, 393.98], [544.75, 562.38], [564.99, 565.40], [565.12, 565.56], [640.82, 647.79], [640.89, 648.58], [719.16, 813.67], [719.38, 814.84]],
     1.25: [[29.882, 29.888], [89.190, 89.256], [127.45, 127.51], [180.55, 181.29], [201.85, 202.07], [286.83, 289.72], [304.86, 305.02], [354.85, 357.14], [365.55, 365.96], [443.96, 451.22], [448.94, 462.48], [540.49, 561.58], [561.34, 580.55], [580.04, 613.15], [608.55, 621.14]],
@@ -41,24 +44,29 @@ test('Leissa ch. 4: C-C-C-C, Tables 4.22–4.32 (including the rigorous bounds o
     2: [[24.574, 24.578], [44.725, 44.771], [87.090, 87.257], [123.22, 123.25], [141.98, 142.37], [150.18, 150.56], [180.06, 181.81], [233.43, 234.00], [236.41, 242.19], [300.88, 300.95], [306.53, 320.16], [319.22, 323.41], [336.68, 337.36], [352.60, 359.09], [371.97, 418.22]],
     4: [[22.798, 22.799], [26.551, 26.569], null, [49.359, 49.615], [68.939, 69.454], [93.787, 94.607], [121.44, 121.45], [123.93, 124.95], [125.71, 125.82], [134.17, 134.73], [145.94, 148.39], [158.62, 160.37], [159.24, 167.01], [169.56, 190.74], [186.43, 200.81]],
     8: [[22.467, 22.468], [23.243, 23.249], [24.904, 24.936], [27.609, 27.715], [31.455, 31.755], [36.507, 37.158], [43.024, 43.958], [51.003, 52.186], [60.412, 61.763], [71.209, 72.689], [83.358, 84.939], [96.817, 98.493], [111.49, 113.34], [121.03, 121.03], [122.00, 122.08]] };
-  for (const [ba, rows] of Object.entries(t432)) { const c = L('CCCC', 0.3, +ba, 0, 0); rows.forEach((b, i) => b && inBounds(c[i], b[0], b[1], `T4.32 b/a ${ba} #${i + 1}`)); }
+  for (const [ba, rows] of Object.entries(t432)) checkBounds(L('CCCC', 0.3, +ba, 0, 0), rows, `T4.32 b/a ${ba}`);
   // T4.27 (Ödman, Galerkin): rows m, columns n, matched within the mode's symmetry class
-  const t427 = [[35.998965, 73.405, 131.902, 210.526, 309.038], [null, 108.237, 165.023, 242.66, 340.59, 458.27], [null, null, 220.06, 296.35, 393.36, 509.9], [null, null, null, 371.38, 467.29, 583.83], [null, null, null, null, 562.18], [null, null, null, null, null, 792.5]], p427 = [];
-  t427.forEach((r, m) => r.forEach((v, n) => { if (v != null) p427.push([near(L('CCCC', 0.3, 1, m % 2, n % 2), v), v, `(${m + 1},${n + 1})`]); }));
+  const t427 = [[35.998965, 73.405, 131.902, 210.526, 309.038], [null, 108.237, 165.023, 242.66, 340.59, 458.27], [null, null, 220.06, 296.35, 393.36, 509.9], [null, null, null, 371.38, 467.29, 583.83], [null, null, null, null, 562.18], [null, null, null, null, null, 792.5]];
+  const p427 = [];
+  forEachCell(t427, (v, m, n) => p427.push([nearest(L('CCCC', 0.3, 1, m % 2, n % 2), v), v, `(${m + 1},${n + 1})`]));
   within(p427, 0.25, 'T4.27'); // largest: his single (1,3) value 131.902, where Young (T4.22) separates 131.64 and 132.25
   // T4.28 (b the short side, λ* = ωb²√(ρh/D)): Iguchi's fundamentals; Kanazawa & Kawai's two other modes run 2.1–2.3 %
   // high throughout, while Claassen & Thorne (T4.30, a/b = 1/1.5 … 1/3) agree with ours to 0.01 % for the same modes
   within([1.5, 2, 2.5, 3].map((ab, i) => [L('CCCC', 0.3, 1 / ab)[0] / ab ** 2, [27.00, 24.56, 23.76, 23.19][i]]), 0.5, 'T4.28 Iguchi');
-  [[0, 1, [67.58, 65.41, 64.49, 64.02]], [1, 1, [81.57, 72.66, 68.89, 66.96]]].forEach(([px, py, vals]) => [1.5, 2, 2.5, 3].forEach((ab, i) => {
-    const e = vals[i] / (L('CCCC', 0.3, 1 / ab, px, py)[0] / ab ** 2) - 1;
-    assert.ok(e > 0.020 && e < 0.023, `T4.28 Kanazawa–Kawai a/b ${ab}: +${(100 * e).toFixed(2)} %`);
-  }));
+  for (const [px, py, vals] of [[0, 1, [67.58, 65.41, 64.49, 64.02]], [1, 1, [81.57, 72.66, 68.89, 66.96]]]) {
+    [1.5, 2, 2.5, 3].forEach((ab, i) => {
+      const e = vals[i] / (L('CCCC', 0.3, 1 / ab, px, py)[0] / ab ** 2) - 1;
+      assert.ok(e > 0.020 && e < 0.023, `T4.28 Kanazawa–Kawai a/b ${ab}: +${(100 * e).toFixed(2)} %`);
+    });
+  }
   // T4.29 (a the short side): Ödman's ref. 4.13 columns agree; ref. 4.60 is cruder (24.09 at a/b = 0.5 where T4.30 has 24.5777)
   const t429 = { 0.5: [[1, 1, 24.58], [1, 2, 31.83], [1, 3, 44.78], [1, 4, 63.34], [1, 5, 87.26], [2, 2, 71.08], [2, 4, 100.80], [2, 6, 151.91], [3, 2, 130.35], [3, 3, 142.38], [3, 4, 159.49], [3, 5, 181.79], [4, 4, 238.35], [4, 6, 287.54], [5, 2, 308.12], [5, 4, 337.08], [5, 5, 358.0], [6, 6, 504.3]],
     0.667: [[1, 1, 27.01], [1, 2, 41.72], [1, 3, 66.53], [1, 4, 100.81], [1, 5, 144.21], [2, 2, 79.81], [2, 4, 136.10], [2, 6, 230.04], [3, 2, 138.64], [3, 3, 161.23], [3, 4, 193.24], [3, 5, 234.65], [4, 4, 271.17], [4, 6, 361.90], [5, 2, 316.11], [5, 4, 369.34], [6, 6, 576.6]] };
-  for (const [ab, rows] of Object.entries(t429)) within(rows.map(([m, n, v]) => [near(L('CCCC', 0.3, 1 / +ab, (m - 1) % 2, (n - 1) % 2), v), v, `(${m},${n})`]), 0.3, `T4.29 a/b ${ab}`);
+  for (const [ab, rows] of Object.entries(t429)) {
+    within(rows.map(([m, n, v]) => [nearest(L('CCCC', 0.3, 1 / +ab, (m - 1) % 2, (n - 1) % 2), v), v, `(${m},${n})`]), 0.3, `T4.29 a/b ${ab}`);
+  }
   const ref460 = [[1, 1, 24.09], [1, 2, 31.40], [1, 3, 44.35], [1, 4, 63.00], [2, 1, 63.93], [2, 2, 70.90], [2, 3, 82.90], [2, 4, 100.18], [3, 1, 123.07], [3, 2, 130.13], [3, 3, 142.12], [3, 4, 156.47], [4, 1, 202.02], [4, 2, 209.18], [4, 3, 231.02], [4, 4, 238.01]]
-    .map(([m, n, v]) => pct(near(L('CCCC', 0.3, 2, (m - 1) % 2, (n - 1) % 2), v), v));
+    .map(([m, n, v]) => pct(nearest(L('CCCC', 0.3, 2, (m - 1) % 2, (n - 1) % 2), v), v));
   assert.ok(median(ref460) < 0.5 && Math.max(...ref460) < 4.5, 'T4.29 ref. 4.60');
 });
 
@@ -116,31 +124,42 @@ test('Leissa ch. 4: Claassen & Thorne C-C-C-C grid, Table 4.30 (497 values, a/b 
   const classes = [[0, 0, 0], [0, 0, 1], [0, 0, 2], [0, 1, 0], [0, 1, 1], [0, 1, 2], [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1]]; // SS 1–3, SA 1–3, AS 1–2, AA 1–2
   // digit slips in the printed table: ours fits each one's row and column trend
   const slips = { '0.02|3': 22.3821, '0.52|3': 32.7980, '0.30|2': 42.3253, '0.56|4': 75.4503, '0.88|8': 96.2324 };
-  let n = 0, close = 0;
+  let count = 0, closeCount = 0;
   for (const line of grid.split('\n')) {
     const [ab, ...vals] = line.trim().split(/\s+/);
     vals.forEach((v, j) => {
       if (v === 'x') return;
-      const [px, py, k] = classes[j], g = L('CCCC', 0.3, 1 / +ab, px, py, 20)[k], slip = slips[`${ab}|${j}`];
-      n++;
-      if (slip) return assert.ok(pct(g, slip) < 0.001, `slip at a/b ${ab} col ${j + 1}`);
+      const [px, py, k] = classes[j];
+      const g = L('CCCC', 0.3, 1 / +ab, px, py, 20)[k];
+      const slip = slips[`${ab}|${j}`];
+      count++;
+      if (slip) {
+        assert.ok(pct(g, slip) < 0.001, `slip at a/b ${ab} col ${j + 1}`);
+        return;
+      }
       assert.ok(pct(g, +v) < 0.15, `a/b ${ab} col ${j + 1}: ours ${g} vs ${v}`);
-      if (pct(g, +v) < 0.01) close++;
+      if (pct(g, +v) < 0.01) closeCount++;
     });
   }
-  assert.equal(n, 497);
-  assert.ok(close >= 490, `${close} of 497 within 0.01 %`);
+  assert.equal(count, 497);
+  assert.ok(closeCount >= 490, `${closeCount} of 497 within 0.01 %`);
   // Table 4.31: second and third symmetric–antisymmetric modes through their closest approach (a/b ≈ 0.834)
   [0.837, 0.836, 0.835, 0.834, 0.833, 0.832, 0.831].forEach((ab, i) => {
     const c = L('CCCC', 0.3, 1 / ab, 0, 1);
-    within([[c[1], [150.2685, 150.1544, 150.0184, 149.8461, 149.6269, 149.3663, 149.0791][i]], [c[2], [151.2909, 150.9951, 150.7217, 150.4853, 150.2963, 150.1492, 150.0029][i]]], 0.02, `T4.31 a/b ${ab}`);
+    within([
+      [c[1], [150.2685, 150.1544, 150.0184, 149.8461, 149.6269, 149.3663, 149.0791][i]],
+      [c[2], [151.2909, 150.9951, 150.7217, 150.4853, 150.2963, 150.1492, 150.0029][i]],
+    ], 0.02, `T4.31 a/b ${ab}`);
   });
 });
 
 test('Leissa ch. 4: C-C-C-SS, C-C-SS-SS, C-C-F-F, C-F-C-F and C-F-SS-F, Tables 4.33–4.44', () => {
   within([31.83, 63.33, 71.08, 100.8, 116.4].map((v, i) => [L('CCCS', 0.3, 1)[i], v]), 0.05, 'T4.33 Dill & Pister');
   // T4.34 (Kaul & Cadambe, beam-function Ritz, upper bounds) skips our 189.77; theirs sit 0.3–0.6 % above ours
-  [130.84, 152.75, 160.00, 209.97].forEach(v => { const g = near(L('CCCS', 0.3, 1), v); assert.ok(g <= v && pct(g, v) < 0.6, `T4.34 ${v}: ${g}`); });
+  [130.84, 152.75, 160.00, 209.97].forEach(v => {
+    const g = nearest(L('CCCS', 0.3, 1), v);
+    assert.ok(g <= v && pct(g, v) < 0.6, `T4.34 ${v}: ${g}`);
+  });
   // T4.35/T4.37 fundamentals. Ours is converged (24.14275 at a/b = 0.5 for every basis size from 20 to 44) and a Ritz value
   // bounds the exact one from above, so the higher Dill–Pister/Kanazawa–Kawai 24.48–24.49 there cannot be right.
   within([[0.667, 25.85], [1, 31.83], [1.5, 48.1]].map(([ab, v]) => [L('CCCS', 0.3, 1 / ab)[0], v, `a/b ${ab}`]), 0.15, 'T4.35 Hamada, Dill–Pister'); // 3–4 figures
@@ -150,12 +169,16 @@ test('Leissa ch. 4: C-C-C-SS, C-C-SS-SS, C-C-F-F, C-F-C-F and C-F-SS-F, Tables 4
   within([[1, 27.00], [1.5, 44.90]].map(([ab, v]) => [L('CCSS', 0.3, 1 / ab)[0], v]), 0.25, 'T4.37 Hamada');
   within([[0.333, 16.74], [0.4, 17.22], [0.5, 18.16], [0.667, 20.39], [1, 27.10]].map(([ab, v]) => [L('CCSS', 0.3, 1 / ab)[0], v, `a/b ${ab}`]), 2.2, 'T4.37 Kanazawa–Kawai');
   // T4.38 (Young, beam-function Ritz upper bounds): ours is lower, by 0.6–3.6 %
-  [6.958, 24.80, 26.80, 48.05, 63.14].forEach((v, i) => { const g = L('CCFF', 0.3, 1)[i]; assert.ok(g <= v && pct(g, v) < 3.7, `T4.38 #${i + 1}: ${g} vs ${v}`); });
+  [6.958, 24.80, 26.80, 48.05, 63.14].forEach((v, i) => {
+    const g = L('CCFF', 0.3, 1)[i];
+    assert.ok(g <= v && pct(g, v) < 3.7, `T4.38 #${i + 1}: ${g} vs ${v}`);
+  });
   // T4.40–4.43 (Claassen & Thorne, ν taken as 0.3): λ against a/b and λ* = ωb²√(ρh/D) against b/a, per symmetry class.
   // Printed to 2–4 figures, so each value may be off by half its last digit. Slips: λ* = 18.93 at b/a 0.9 (ours 17.94;
   // the λ rows put this mode at 22.2·0.81 = 17.98); 61.2 at a/b 0.2 in 4.42/4.43, below both neighbours and the 61.67
   // limit; and 4.42's λ* = 2.3 at b/a 0.2, where ours is 2.402 and every other cell of that column matches its rounding.
   const half = v => 0.5 * 10 ** -((`${v}`.split('.')[1] ?? '').length);
+  const matchesPrinted = (g, v, label) => assert.ok(Math.abs(g - v) <= half(v) + 0.006 * v, `${label}: ${g} vs ${v}`);
   const cfcf = [[0, 0, { 1: [22.17, 43.6, 120.1, 136.9, 149.3], 0.9: [22.19, 39.5, 114.2, 120.1, 143.9], 0.8: [22.20, 35.8, 94.1, 120.2, 139.1], 0.7: [22.22, 32.6, 76.3, 120.3, 134.8], 0.6: [22.24, 29.8, 61.1, 120.4, 122.5], 0.5: [22.26, 27.5, 48.6, 90.3, 120.4], 0.4: [22.28, 25.6, 38.5, 64.3, 103.6], 0.3: [22.3, 24.1, 31.0, 44.6, 65.9], 0.2: [22.3, 23.1, 26.0, 31.4, 40.0], 0.1: [22.3, 22.5, 23.1, 24.3, 26.1] },
     { 0.9: [null, 39.5, 97.2, 126.1, 133.6], 0.8: [14.16, 35.7, 76.8, 105.5, 130.8], 0.7: [10.83, 32.5, 58.7, 87.0, 128.3], 0.6: [7.95, 29.7, 43.1, 70.9, 106.7], 0.5: [5.51, 27.3, 29.9, 56.9, 74.0], 0.4: [3.51, 19.0, 25.5, 45.3, 47.3], 0.3: [1.97, 10.7, 24.1, 26.5, 35.7], 0.2: [0.87, 4.7, 11.7, 21.9, 23.1], 0.1: [0.217, 1.2, 2.9, 5.4, 8.7] }],
     [0, 1, { 1: [26.40, 79.8], 0.9: [25.67, 68.4], 0.8: [24.99, 58.2], 0.7: [24.38, 49.3], 0.6: [23.84, 41.8], 0.5: [23.36, 35.5], 0.4: [23.0, 30.6], 0.3: [22.7, 26.8], 0.2: [22.5, 24.2], 0.1: [22.3, 22.7] },
@@ -166,14 +189,28 @@ test('Leissa ch. 4: C-C-C-SS, C-C-SS-SS, C-C-F-F, C-F-C-F and C-F-SS-F, Tables 4
       { 0.9: [55.5, 112.6], 0.8: [45.0, 102.0], 0.7: [35.7, 92.6], 0.6: [27.5, 78.3], 0.5: [20.5, 56.3], 0.4: [14.7, 38.2], 0.3: [9.87, 24.0], 0.2: [5.90, 13.3], 0.1: [2.80, 5.6] }]];
   let count = 0;
   for (const [px, py, lam, lamStar] of cfcf) {
-    for (const [ab, vals] of Object.entries(lam)) vals.forEach((v, k) => { if (v == null) return; count++; const g = L('CFCF', 0.3, 1 / +ab, px, py)[k]; assert.ok(Math.abs(g - v) <= half(v) + 0.006 * v, `λ a/b ${ab} class ${px}${py} #${k + 1}: ${g} vs ${v}`); });
-    for (const [ba, vals] of Object.entries(lamStar)) vals.forEach((v, k) => { if (v == null) return; count++; const g = L('CFCF', 0.3, +ba, px, py)[k] * ba ** 2; assert.ok(Math.abs(g - v) <= half(v) + 0.006 * v, `λ* b/a ${ba} class ${px}${py} #${k + 1}: ${g} vs ${v}`); });
+    for (const [ab, vals] of Object.entries(lam)) {
+      const computed = L('CFCF', 0.3, 1 / +ab, px, py);
+      vals.forEach((v, k) => {
+        if (v == null) return;
+        count++;
+        matchesPrinted(computed[k], v, `λ a/b ${ab} class ${px}${py} #${k + 1}`);
+      });
+    }
+    for (const [ba, vals] of Object.entries(lamStar)) {
+      const computed = L('CFCF', 0.3, +ba, px, py);
+      vals.forEach((v, k) => {
+        if (v == null) return;
+        count++;
+        matchesPrinted(computed[k] * ba ** 2, v, `λ* b/a ${ba} class ${px}${py} #${k + 1}`);
+      });
+    }
   }
   assert.ok(count >= 200, `${count} C-F-C-F values`);
   assert.ok(pct(L('CFCF', 0.3, 0.9)[0] * 0.81, 17.93) < 0.1, 'T4.40 λ* b/a 0.9 is 17.93, printed 18.93');
   assert.ok(Math.abs(L('CFCF', 0.3, 0.2, 1, 0)[0] * 0.04 - 2.4) < 0.05, 'T4.42 λ* b/a 0.2 is 2.4, printed 2.3');
   // T4.44 lists modes 1, 2, 4 and 5 of ours (it omits our 39.73)
-  within([15.16, 20.50, 50.21, 56.38].map(v => [near(L('CFSF', 0.3, 1), v), v]), 1.6, 'T4.44');
+  within([15.16, 20.50, 50.21, 56.38].map(v => [nearest(L('CFSF', 0.3, 1), v), v]), 1.6, 'T4.44');
 });
 
 test('Leissa ch. 4: cantilever plates, Tables 4.45–4.50, within rigorous bounds', () => {
@@ -185,13 +222,13 @@ test('Leissa ch. 4: cantilever plates, Tables 4.45–4.50, within rigorous bound
     2: [[3.3856, 3.4575], [21.062, 21.550], [58.946, 60.477], [91.165, 93.390], [115.77, 119.00], [122.53, 127.22], [170.71, 179.29], [193.19, 198.94], [234.60, 252.59], [287.76, 297.09]],
     4: [[3.3306, 3.4332], [20.822, 21.475], [58.356, 60.292], [114.57, 118.59], [189.63, 196.62], [283.02, 293.96], [354.30, 361.12], [384.46, 394.02], [401.04, 415.19], [443.26, 459.58]],
     8: [[3.3025, 3.4297], [20.683, 21.481], [57.940, 60.208], [113.67, 118.20], [188.20, 195.83], [281.60, 293.22], [393.91, 410.42], [525.11, 547.45], [675.15, 704.29], [842.90, 880.88]] };
-  for (const [ab, rows] of Object.entries(t449)) { const c = L('CFFF', 0.3, 1 / +ab, -1, 0); rows.forEach(([lo, hi], i) => inBounds(c[i], lo, hi, `T4.49 a/b ${ab} #${i + 1}`)); }
+  for (const [ab, rows] of Object.entries(t449)) checkBounds(L('CFFF', 0.3, 1 / +ab, -1, 0), rows, `T4.49 a/b ${ab}`);
   // T4.48 (Barton, Ritz upper bounds) with Gontkevich's lower bounds of T4.50 for the same modes; T4.45 (Young) likewise
   const t448 = { 0.5: [3.508, 5.372, 21.96, 10.26, 24.85], 1: [3.494, 8.547, 21.44, 27.46, 31.17], 2: [3.472, 14.93, 21.61, 94.49, 48.71], 5: [3.450, 34.73, 21.52, 563.9, 105.9] };
   const t450 = { 0.5: [3.35407, 4.6490, 21.0195, 9.0096, 23.110], 1: [3.35407, 7.2595, 21.0195, 25.151, 28.546], 2: [3.35407, 13.3064, 21.0195, 86.402, 43.977], 5: [3.35407, 32.3660, 21.0195, 534.55, 98.836] };
   // One exception: a/b = 5, mode 4 is printed 563.9, 0.2 % below ours, which stays 565.091 for every basis from 28 to 52.
   for (const [ab, ups] of Object.entries(t448)) ups.forEach((u, i) => {
-    const g = near(L('CFFF', 0.3, 1 / +ab), u);
+    const g = nearest(L('CFFF', 0.3, 1 / +ab), u);
     assert.ok(g >= t450[ab][i] && g <= u * (ab === '5' && i === 3 ? 1.0025 : 1) && pct(g, u) < 2.5, `T4.48/4.50 a/b ${ab} #${i + 1}: ${g} vs [${t450[ab][i]}, ${u}]`);
   });
 });
@@ -204,11 +241,12 @@ test('Leissa ch. 4: completely free plates, Tables 4.61–4.76, within rigorous 
     2: [[6.4563, 6.6464], [24.417, 25.455], [56.151, 59.051], [63.726, 65.392], [85.647, 89.263], [107.66, 113.81], [125.15, 131.73], [174.88, 186.73], [178.26, 190.04], [195.26, 202.79]],
     4: [[3.1463, 3.2604], [10.284, 10.728], [19.809, 20.821], [32.952, 34.783], [49.920, 53.194], [60.830, 62.394], [67.133, 69.099], [71.408, 76.824], [78.658, 82.051], [94.076, 99.291]],
     8: [[1.5330, 1.6158], [4.7291, 4.9941], [8.2953, 8.7915], [12.436, 13.237], [17.323, 18.514], [23.095, 24.766], [29.845, 32.089], [37.617, 40.542], [46.410, 50.150], [56.017, 60.602]] };
-  for (const [ba, rows] of Object.entries(t475)) { const c = L('FFFF', 0.3, +ba, 1, 1); rows.forEach(([lo, hi], i) => inBounds(c[i], lo, hi, `T4.75 b/a ${ba} #${i + 1}`)); }
+  for (const [ba, rows] of Object.entries(t475)) checkBounds(L('FFFF', 0.3, +ba, 1, 1), rows, `T4.75 b/a ${ba}`);
   // T4.67: antisymmetric about the axes and symmetric about the diagonals (a subset of that class), ν = 0.225 and 0.3;
   // upper bounds are Bazley–Fox–Stadter's 50-term ones (Sigillito's column dips below the true value: 13.464 < 13.468)
-  for (const [nu, rows] of [[0.3, [[13.201, 13.473], [75.735, 77.354], [147.71, 153.07], [209.46, 214.62], [288.72, 299.05], [416.00, 430.33], [432.13, 450.71], [498.77, 516.19], [645.60, 676.35], [701.20, 727.08]]],
-    [0.225, [[13.851, 14.118], [76.245, 77.576], [151.54, 156.36], [210.90, 214.67], [293.27, 302.24], [421.26, 430.76], [438.47, 456.37], [504.41, 519.03], [654.62, 682.76], [710.70, 726.97]]]]) {
+  const t467 = [[0.3, [[13.201, 13.473], [75.735, 77.354], [147.71, 153.07], [209.46, 214.62], [288.72, 299.05], [416.00, 430.33], [432.13, 450.71], [498.77, 516.19], [645.60, 676.35], [701.20, 727.08]]],
+    [0.225, [[13.851, 14.118], [76.245, 77.576], [151.54, 156.36], [210.90, 214.67], [293.27, 302.24], [421.26, 430.76], [438.47, 456.37], [504.41, 519.03], [654.62, 682.76], [710.70, 726.97]]]];
+  for (const [nu, rows] of t467) {
     const c = L('FFFF', nu, 1, 1, 1);
     rows.forEach(([lo, hi], i) => inBounds(c.find(x => x >= lo * 0.999 && x <= hi * 1.001) ?? NaN, lo, hi, `T4.67 ν ${nu} #${i + 1}`));
   }
@@ -218,21 +256,31 @@ test('Leissa ch. 4: completely free plates, Tables 4.61–4.76, within rigorous 
   // T4.67 (ours 77.17, 152.85 sit inside); his 173.6954 falls in a gap T4.75 proves empty; his 65.3680 has no partner
   // in our converged doubly symmetric spectrum (19.596, 24.270, 63.686, 117.109, …).
   const ig = [24.2702, 63.6870, 122.4449, 168.4888, 299.9325, 19.5961, 117.1093, 161.5049, 293.7190, 13.4728, 214.1914, 301.5724, 69.5020, 204.6527, 294.9247];
-  within(ig.map(v => [near(L('FFFF', 0.3, 1), v), v]), 1.1, 'T4.65');
-  assert.ok(median(ig.map(v => pct(near(L('FFFF', 0.3, 1), v), v))) < 0.1);
+  within(ig.map(v => [nearest(L('FFFF', 0.3, 1), v), v]), 1.1, 'T4.65');
+  assert.ok(median(ig.map(v => pct(nearest(L('FFFF', 0.3, 1), v), v))) < 0.1);
   assert.ok(!L('FFFF', 0.3, 1).some(x => pct(x, 173.6954) < 3) && !L('FFFF', 0.3, 1, 0, 0).some(x => pct(x, 65.368) < 2), 'Iguchi\'s extra roots');
   // T4.61 (Lemke, 6–15 beam-function terms, upper bounds) at four Poisson ratios: ours is 0.1–1.2 % lower throughout
-  for (const [nu, vals] of [[0.225, [14.14, 20.49, 23.97, 66.402, 71.830, 77.881]], [0.343, [13.086, 19.231, 24.58, 62.676, 68.346, 77.380]], [0.36, [12.927, 19.045, 24.66, 62.196, 67.804, 77.309]], [0.39, [12.64, 18.707, 24.80, 61.329, 66.820, 77.162]]])
-    vals.forEach(v => { const g = near(L('FFFF', nu, 1), v); assert.ok(g <= v && pct(g, v) < 1.3, `T4.61 ν ${nu} ${v}: ${g}`); });
+  const t461 = [[0.225, [14.14, 20.49, 23.97, 66.402, 71.830, 77.881]], [0.343, [13.086, 19.231, 24.58, 62.676, 68.346, 77.380]], [0.36, [12.927, 19.045, 24.66, 62.196, 67.804, 77.309]], [0.39, [12.64, 18.707, 24.80, 61.329, 66.820, 77.162]]];
+  for (const [nu, vals] of t461) {
+    vals.forEach(v => {
+      const g = nearest(L('FFFF', nu, 1), v);
+      assert.ok(g <= v && pct(g, v) < 1.3, `T4.61 ν ${nu} ${v}: ${g}`);
+    });
+  }
   // T4.76 (Ritz upper bounds, b/a = 4, doubly antisymmetric): ours is lower and inside T4.75's bounds
-  [3.2597, 10.711, 20.749, 34.622, 53.092, 64.080, 71.048, 77.232, 84.532, 102.87].forEach((v, i) => { const g = L('FFFF', 0.3, 4, 1, 1)[i]; assert.ok(g <= v * (1 + 1e-4) && pct(g, v) < 3.7, `T4.76 #${i + 1}: ${g} vs ${v}`); });
+  [3.2597, 10.711, 20.749, 34.622, 53.092, 64.080, 71.048, 77.232, 84.532, 102.87].forEach((v, i) => {
+    const g = L('FFFF', 0.3, 4, 1, 1)[i];
+    assert.ok(g <= v * (1 + 1e-4) && pct(g, v) < 3.7, `T4.76 #${i + 1}: ${g} vs ${v}`);
+  });
 });
 
 test('Leissa ch. 4: Waller\'s measured free square plate, Table 4.68 (89 frequency ratios)', () => {
   // brass, ν = 1/3, size not given; ratios to the fundamental (the cross mode)
   const rows = `.. .. 1.52 5.10 9.14 15.8 23.0 32.5 43 55.2 70 84 101 119 141|.. 1 2.71 5.30 10.3 15.8 23.9 32.2 43 55.8 71 86.1 102 121|1.94 2.71 4.81 8.52 12.4 19.0 26.4 34 46.6 59 73 89 105 124|5.10 6.00 8.52 11.8 16.6 22.6 30.0 39.5 50.5 63.4 77.5 92.4 110 128|9.9 10.3 13.2 16.6 21.5 28.7 35.5 45.4 55.9 69.7 82.9 99 116 132|15.8 16.6 19.0 23.3 28.7 35 43 52.1 64.5 75.9 90 106 122 136|23.8 23.9 27.1 30.0 35.9 43 51 61.7 73 84 99 115 130|32.5 32.4 34.0 39.8 45.4 53 61.7 70.3 84 93 108 124|43.0 43.0 46.6 50.5 57.2 64.5 73 84 94.4 106 120 136|55.2 55.8 59 63.4 69.7 76.2 84 93.2 106 120 133|70.0 71.0 73 77.5 82.9 90 99 108 120 133|84.0 86.1 89 92.4 99 106 115 124 136|101 102 105 110 116 122 130|119 121 124 128 132 136 147|141`;
   const ratios = [...new Set(rows.split('|').flatMap(r => r.split(' ').filter(x => x !== '..').map(Number)).filter(x => x !== 1))];
-  const ms = L('FFFF', 1 / 3, 1), f0 = ms[0], err = ratios.map(r => pct(near(ms.map(x => x / f0), r), r));
+  const ms = L('FFFF', 1 / 3, 1);
+  const f0 = ms[0];
+  const err = ratios.map(r => pct(nearest(ms.map(x => x / f0), r), r));
   assert.equal(ratios.length, 89);
   assert.ok(median(err) < 1 && Math.max(...err) < 4.5, `median ${median(err)}, max ${Math.max(...err)}`);
 });
