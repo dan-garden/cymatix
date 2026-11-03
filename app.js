@@ -6,7 +6,8 @@ import { AIR as GRAIN_AIR, SPECIES, cellCapacity, grainMass, newFields, stepGrai
 import { createSandGL } from './sandGL.js';
 import { createOrbitCamera, orbitControls, pickPlane } from './orbitCamera.js';
 import { createPlateView3D } from './plateView3D.js';
-import { autoExaggeration, deflectionAt, heapHeightPerGrain, peakDeflection } from './plateSurface.js';
+import { traceFieldLines } from './fieldLines.js';
+import { autoExaggeration, heapHeightPerGrain, peakDeflection, plateHeight, slowMotion, strongestTones } from './plateSurface.js';
 import { runPlan, solvePlan } from './solvePlan.js';
 import { MATERIALS } from './materials.js';
 import { cancelGroup, runInGroup, runTask } from './solverPool.js';
@@ -58,6 +59,7 @@ const updateRangeOutputs = () => {
     if (output?.tagName === 'OUTPUT') output.value = el.id === 'grains' ? `${el.value / 1000}k` : el.value;
   }
 };
+const syncLineControls = () => { $('heightScale').disabled = !$('fieldLines').checked; }; // Waves only moves the lines
 form.addEventListener('input', e => {
   if (e.target.type === 'range') updateRangeOutputs();
 });
@@ -684,14 +686,17 @@ function renderPlate(dt) {
 
 // ---------- 3D view ----------
 
-const ONE_CYCLE_PER_SECOND = 1;
+const MAX_LISTED = 4;
+const NO_LINES = new Float32Array(0);
 const camera = createOrbitCamera();
 const plateView = sandGL && createPlateView3D(sandGL.gl);
 const stillMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const wavePhases = []; // one per tone, lowest first, advancing at true speed ratios from an arbitrary start: the spectrum gives no phase between tones
+let plateHeights = new Float32Array(0);
+let soloTone = null; // the tone picked in the legend for the lines to ride alone
+// shortcut: a tone is known by its rounded frequency, so one that wanders in live audio comes back; fine for a viewing aid
+const toneKey = tone => Math.round(tone.frequency);
 let viewIn3D = false;
-let plateTime = 0; // seconds of plate motion, slowed so that the strongest tone shows one cycle per second
-let deflection = new Float32Array(0);
-let exaggeration = 1;
 
 function setView(in3D) {
   viewIn3D = in3D;
@@ -700,43 +705,83 @@ function setView(in3D) {
   $('view3D').classList.toggle('on', in3D);
   plateCanvas.tabIndex = in3D ? 0 : -1;
   plateCanvas.setAttribute('aria-label', in3D
-    ? 'Simulated vibrating plate in 3D. Drag or use the arrow keys to rotate, scroll to zoom, click to move the driver.'
+    ? 'Simulated vibrating plate covered in sand, in 3D. Drag or use the arrow keys to rotate, scroll to zoom, click to move the driver.'
     : 'Simulated vibrating plate covered in sand. Click to move the driver.');
 }
 
-function drawPlateIn3D(dt) {
-  const { G, circle, hx, hy, edge } = plate;
-  const unit = metresPerUnit();
-  const strongest = currentDrives[0];
-  if (strongest) {
-    const period = 2 * Math.PI / strongest.omega;
-    // shortcut: phase drifts for a tone that wanders, as time grows; reset plateTime if long runs ever flicker
-    plateTime = stillMotion.matches ? period / 4 : plateTime + dt * ONE_CYCLE_PER_SECOND * period;
-  }
-  if (deflection.length !== G * G) deflection = new Float32Array(G * G);
-  deflectionAt(currentDrives, plateTime, deflection, edge);
+const fmtLength = metres => {
+  if (metres >= 1) return `${metres.toPrecision(3)} m`;
+  if (metres >= 1e-3) return `${(metres * 1e3).toPrecision(3)} mm`;
+  return metres >= 1e-6 ? `${(metres * 1e6).toPrecision(3)} µm` : `${(metres * 1e9).toPrecision(3)} nm`;
+};
 
+function updateLegend(magnified, slowdown, driftTop) {
+  const showLines = $('fieldLines').checked;
+  const tones = strongestTones(currentDrives, num('g'), MAX_LISTED).filter(tone => tone.peak > 0);
+  const solo = showLines ? tones.find(tone => toneKey(tone) === soloTone) : undefined;
+  const rows = tones.map(tone => {
+    const on = !solo || tone === solo;
+    const pick = showLines ? `<button type="button" aria-pressed="${tone === solo}" aria-label="Lines ride only the ${fmtHz(tone.frequency)} tone">${on ? '■' : '□'}</button>` : '';
+    return `<tr${showLines ? ` data-tone="${toneKey(tone)}"` : ''}${on ? '' : ' class="off"'}><td>${pick}</td>`
+      + `<td>${fmtHz(tone.frequency)}</td><td>${fmtLength(tone.peak)}</td><td>${tone.shaking.toPrecision(3)} g</td></tr>`;
+  }).reverse();
+  const header = `<tr${showLines ? ' title="Click a tone for the lines to ride it alone, and again for all tones"' : ''}><th></th><th>Tone</th><th title="The largest real up-and-down motion of this tone alone">Height</th>`
+    + '<th title="Peak acceleration of this tone alone. Above about 1 g, grains hop">Shaking</th></tr>';
+  const notes = [];
+  if (tones.length) {
+    const shown = currentDrives.length > tones.length ? [`${tones.length} of ${currentDrives.length} tones`] : [];
+    if (showLines) shown.push(`lines ${magnified ? `×${magnified.toLocaleString('en')}` : 'flat'}`, `slowed ×${Math.round(slowdown).toLocaleString('en')}`);
+    if (shown.length) notes.push(shown.join(' · '));
+    if (showLines && magnified && !solo && currentDrives.length > 1) notes.push('together: one possible timing');
+  }
+  if (driftTop > 0) notes.push(`field lines: grain drift, up to ${fmtLength(driftTop)}/s`);
+  else if (tones.length && showLines) notes.push('no field lines: shaking too weak to move grains');
+  const scale = num('grain');
+  notes.push(`grains ${fmtLength(grainSpecies().D)}${scale === 1 ? ' true size' : `, drawn ×${scale}`}, at least 1 pixel`);
+  const legend = $('waveLegend');
+  const html = (tones.length ? header + rows.join('') : '') + notes.map(note => `<tr><td colspan="4">${note}</td></tr>`).join('');
+  if (legend.innerHTML !== html) legend.innerHTML = html;
+  legend.hidden = !html;
+}
+
+function drawPlateIn3D(dt) {
+  const { G, circle, hx, hy } = plate;
+  const unit = metresPerUnit();
+  const species = grainSpecies();
+  const tones = strongestTones(currentDrives, num('g'), currentDrives.length).filter(tone => tone.peak > 0);
+  const solo = tones.find(tone => toneKey(tone) === soloTone);
+  const ridden = solo ? [solo] : tones;
+  const slowdown = slowMotion(ridden.map(tone => tone.frequency));
+  tones.forEach((tone, index) => {
+    wavePhases[index] = stillMotion.matches ? tone.peakPhase : (wavePhases[index] ?? 0) + tone.drive.omega * dt / slowdown;
+    tone.phase = wavePhases[index];
+  });
+  if (plateHeights.length !== G * G) plateHeights = new Float32Array(G * G);
   const chosen = $('heightScale').value;
-  if (chosen !== 'auto') exaggeration = +chosen;
-  else if (strongest) exaggeration = autoExaggeration(peakDeflection(currentDrives), unit);
+  const magnified = chosen === 'off' ? 0 : chosen === 'auto' ? autoExaggeration(solo ? solo.peak : peakDeflection(currentDrives), unit) : +chosen;
+  const traced = $('fieldLines').checked && transport ? traceFieldLines(transport, plate) : { vertices: NO_LINES, topSpeed: 0 };
 
   plateView.draw({
     camera,
     grid: G,
-    deflection,
-    deflectionScale: exaggeration / unit,
-    heapScale: heapHeightPerGrain(grainSpecies(), G, unit) / unit,
     image: sandGL.image,
-    counts: sandGL.counts,
+    grains: {
+      positions: sandGL.positions,
+      side: sandGL.side,
+      count: grainCount,
+      counts: sandGL.counts,
+      heapScale: heapHeightPerGrain(species, G, unit) / unit,
+      diameter: num('grain') * species.D / unit,
+      colour: hexToRgb($('sandCol').value).map(value => value / 255),
+    },
+    lines: { vertices: traced.vertices, heights: traced.vertices.length ? plateHeight(ridden, plateHeights, plate.edge) : plateHeights, scale: magnified / unit },
     circle,
     hx,
     hy,
     background: hexToRgb($('bg').value).map(value => value / 255),
     size,
   });
-  const slowed = strongest ? ` · slowed ×${Math.round(strongest.omega / (2 * Math.PI * ONE_CYCLE_PER_SECOND)).toLocaleString('en')}` : '';
-  const info = `height ×${exaggeration.toLocaleString('en')}${slowed}`;
-  if ($('viewInfo').textContent !== info) $('viewInfo').textContent = info;
+  if (frameCount % 6 === 0) updateLegend(magnified, slowdown, traced.topSpeed * unit);
 }
 
 // ---------- spectrum rendering ----------
@@ -879,11 +924,11 @@ function updateReadout() {
     if (mode) lines.push(`nearest mode  ${mode.label}  ${fmtHz(mode.f)}  ${fmtCents(1200 * Math.log2(strongest.f / mode.f))}`);
   }
   lines.push(`peak plate acceleration ${peakGamma.toFixed(2)} g`);
-  if (strongest) { // amplitude = a/ω² at the strongest peak; linear plate theory needs it well below the thickness
-    const amplitude = peakGamma * num('g') / (2 * Math.PI * strongest.f) ** 2;
+  if (strongest) { // linear plate theory needs the deflection well below the thickness
+    const amplitude = peakDeflection(currentDrives);
     const ratio = amplitude / (num('h') / 1000);
     const omega = 2 * Math.PI * strongest.f;
-    lines.push(`peak deflection ≈ ${(amplitude * 1e6).toPrecision(3)} µm = ${(100 * ratio).toFixed(1)} % of thickness${stiffeningNote(peakGamma * num('g'), omega)}`);
+    lines.push(`peak deflection ${currentDrives.length > 1 ? 'up to' : '≈'} ${(amplitude * 1e6).toPrecision(3)} µm = ${(100 * ratio).toFixed(1)} % of thickness${stiffeningNote(peakGamma * num('g'), omega)}`);
     const note = layerNote(strongest.f);
     if (note) lines.push(note);
   }
@@ -1003,13 +1048,16 @@ if (plateView) {
   orbitControls(plateCanvas, camera, {
     isActive: () => viewIn3D,
     onClick: (x, y) => {
-      // shortcut: picks the plate at rest, so a click is slightly off where the magnified surface is high
       const hit = pickPlane(camera, x, y);
       if (hit && plate.contains(...hit)) moveDriverTo(...hit);
     },
   });
   listen('view2D', 'click', () => setView(false));
   listen('view3D', 'click', () => setView(true));
+  listen('waveLegend', 'click', event => {
+    const key = event.target.closest('[data-tone]')?.dataset.tone;
+    if (key) soloTone = +key === soloTone ? null : +key;
+  });
 }
 new ResizeObserver(resize).observe($('stage'));
 
@@ -1086,6 +1134,7 @@ const PRESETS = [
 
 function syncForm() { // derived state after the whole form changed (page load, reset, preset)
   updateRangeOutputs();
+  syncLineControls();
   showMaterialSource();
   rebuildNow();
   setTone(num('toneHz'));
@@ -1117,8 +1166,13 @@ function presetButton(preset) {
 }
 
 $('presets').replaceChildren(...PRESETS.map(presetButton));
+listen('fieldLines', 'input', syncLineControls);
 listen('resetAll', 'click', () => {
   form.reset();
+  // the view bar sits outside the form, so presets leave it alone and only this resets it
+  $('fieldLines').checked = $('fieldLines').defaultChecked;
+  $('heightScale').value = 'auto';
+  soloTone = null;
   syncForm();
   useSource(null);
 });

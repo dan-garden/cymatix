@@ -82,12 +82,19 @@ const HOP_SCALE = 0.3; // mean hop height ≈ 0.3 min(Vτ, V²/2g), powder runs
 const STREAM_COUPLING = 0.5; // grains feel half the slip at their mean hop height, powder runs
 
 let work = null;
+/** values into copy, with each cell just outside the edge taking its nearest plate cell, so slopes never see a false cliff at the rim. */
+const withRim = (values, copy, edge) => {
+  copy.set(values);
+  for (let k = 0; k < edge.length; k += 2) copy[edge[k]] = copy[edge[k + 1]];
+  return copy;
+};
+
 const scratchFor = cells => {
   if (work && work.cells === cells) return work;
   const grid = () => new Float32Array(cells);
   work = {
     cells, A: grid(), gradSq: grid(), V2: grid(), G2: grid(), peak: grid(), fibre2: grid(), nx: grid(), ny: grid(),
-    ax: grid(), ay: grid(), sx: grid(), sy: grid(),
+    ax: grid(), ay: grid(), sx: grid(), sy: grid(), rimRe: grid(), rimIm: grid(),
   };
   return work;
 };
@@ -178,7 +185,10 @@ export function transportFields({ G, drives, plate, grain, fluid = AIR, g = G0, 
         if (dragged) { ax[q] += rect * gx; ay[q] += rect * gy; }
       }
     }
-    if (dragged) addStreamingSlip({ G, dx, omega, k, kappa, re, im }, sx, sy, gradSq);
+    if (dragged) {
+      const [rimRe, rimIm] = edge ? [withRim(re, w.rimRe, edge), withRim(im, w.rimIm, edge)] : [re, im];
+      addStreamingSlip({ G, dx, omega, k, kappa, re: rimRe, im: rimIm }, sx, sy, gradSq);
+    }
   }
 
   const { e, mu, D: grainD, gammaStick = 1, scatter = 1, arm = 0 } = grain;
@@ -219,6 +229,15 @@ export function transportFields({ G, drives, plate, grain, fluid = AIR, g = G0, 
     // Air stops a grain's sideways motion within τ, whatever its flight time, so a random walk cannot beat σ²τ, with a
     // sideways speed σ about a fifth of the bounce speed. It only limits grains light enough for air to matter.
     D[q] = Math.min(hopping, SCATTER_SPEED_SHARE ** 2 * v2 * tau) / (unit * unit);
+  }
+  if (edge) { // the rim cells' own slopes run off into empty grid, so they take their plate cell's motion too
+    for (let k = 0; k < edge.length; k += 2) {
+      const [outside, cell] = [edge[k], edge[k + 1]];
+      ux[outside] = ux[cell];
+      uy[outside] = uy[cell];
+      D[outside] = D[cell];
+      level[outside] = level[cell];
+    }
   }
   return out;
 }
@@ -268,6 +287,17 @@ const uniform = rng => { // xorshift32
 
 const sample = (values, G, ax, ay, o) => // bilinear with weights from stepGrains
   (values[o] + ax * (values[o + 1] - values[o])) * (1 - ay) + (values[o + G] + ax * (values[o + G + 1] - values[o + G])) * ay;
+
+/** A grain's mean velocity at (x, y) into out as [u, v] in plate units/s: stepGrains' drift, without the random hop or crowding. */
+export function driftAt({ ux, uy, level }, G, x, y, out) {
+  const cellsPerUnit = G / 2, end = G - 1.001;
+  const fx = Math.max(0, Math.min(end, (x + 1) * cellsPerUnit - 0.5));
+  const fy = Math.max(0, Math.min(end, (y + 1) * cellsPerUnit - 0.5));
+  const i = fx | 0, j = fy | 0, ax = fx - i, ay = fy - j, o = j * G + i;
+  const activity = ramp(sample(level, G, ax, ay, o));
+  out[0] = activity * sample(ux, G, ax, ay, o);
+  out[1] = activity * sample(uy, G, ax, ay, o);
+}
 
 /**
  * Advances count grains by dt seconds, in place, in plate units. x, y are Float32Array in [−1, 1]; rng is a Uint32Array(1)

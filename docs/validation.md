@@ -19,17 +19,18 @@ Run everything with `npm test`. Results on this page are in the tests unless it 
 
 | File | Tests | Covers |
 |---|---|---|
-| [physics.test.js](../physics.test.js) | 12 | Core maths and real experiments |
+| [physics.test.js](../physics.test.js) | 13 | Core maths and real experiments |
 | [leissa.test.js](../leissa.test.js) | 6 | Leissa chapter 2, Tables 4.3–4.20 |
 | [leissa-ch4b.test.js](../leissa-ch4b.test.js) | 6 | Leissa Tables 4.22–4.76 |
 | [mindlin.test.js](../mindlin.test.js) | 13 | True Mindlin modes against exact theory and 3D elasticity |
 | [fluid.test.js](../fluid.test.js) | 17 | Fluid added mass, radiation, damping and sand mass |
 | [patch.test.js](../patch.test.js) | 12 | Finite clamps against exact annular plates and experiments |
 | [nonlinear.test.js](../nonlinear.test.js) | 10 | Large-amplitude stiffening |
-| [grains.test.js](../grains.test.js) | 13 | Sand and powder transport |
+| [grains.test.js](../grains.test.js) | 14 | Sand and powder transport |
 | [plateModel.test.js](../plateModel.test.js) | 13 | All of it working together |
-| [plateSurface.test.js](../plateSurface.test.js) | 7 | The plate's shape over a cycle, used by the 3D view |
-| [orbitCamera.test.js](../orbitCamera.test.js) | 7 | The 3D camera and picking |
+| [plateSurface.test.js](../plateSurface.test.js) | 13 | The plate's height and each tone's shaking, against exact theory |
+| [fieldLines.test.js](../fieldLines.test.js) | 7 | Field lines against the drift law and the real grain step |
+| [orbitCamera.test.js](../orbitCamera.test.js) | 9 | The 3D camera, picking and zooming |
 | [calibrate.test.js](../calibrate.test.js) | 4 | Fitting a plate to measurements |
 
 Where a printed value disagrees, an independent exact solution (scipy) or a measurement decides. In every such case it sides with the app.
@@ -349,17 +350,43 @@ The view draws existing results, so it adds no physics of its own and cannot mak
 |---|---|---|
 | Slowly pushed clamped disc against `Fa²/16πD` (Timoshenko), in phase | Within 0.5 %, and 10⁻⁴ of that a quarter cycle later | Yes |
 | Plate at resonance | Lags the force by a quarter cycle, with under 5 % in phase | Yes |
-| Shape after one period, and two tones against each alone | Same within 10⁻⁵ | Yes |
+| Each tone on a simply supported plate against the exact Navier series, in size and phase, at 220, 660 and 1760 Hz | Worst 0.42 %, 0.26 % and 0.70 % of the tone's peak | Yes |
+| Height after a full cycle, and against the amplitude | Same within 10⁻⁵, and never above it | Yes |
+| Several tones together, each at its own phase | The sum of each alone within 10⁻⁵, and never past the peak deflection | Yes |
+| Tones chosen by shaking, from a real saw wave's heights | Picks 220 and 660 Hz, with 660 Hz shaking hardest at a fifth of the height | Yes |
 | Clamped rim, with air and true Mindlin modes | Under 2 % of peak one grid cell from the edge | Yes |
 | Heap volume against the grains' volume | Conserved to 10⁻¹² | Yes |
-| 3D from almost straight above at ×1, against the 2D image, same grains | Correlation 0.990 over 5041 blocks | No, browser check |
+| Sand lines on an exact (2,2) mode against the drift law `u ∝ −∇\|W\|` | Direction within 18° everywhere off the antinodes, amplitude always falling | Yes |
+| Where sand lines end on that mode at 5 g | Within one step of the 0.95 g threshold | Yes |
+| A grain moved by the real sand step, from partway along a line | Stays within one cell of it and stops at its end | Yes |
+| Powder lines climbing the amplitude, on the same mode | 0 % at 5 g, 53 % at 100 g, 72 % at 200 g, each ending on an antinode, as [Faraday 1831](https://doi.org/10.1098/rstl.1831.0018) saw | Yes |
+| Settled sand within one cell of where the plate stands almost still (nodes of the standing shape, moving under 10 % of the peak), on a free square at 982 Hz | 90.5 %, on places covering 24.5 % of the plate | Yes |
+| The same on a free disc at 3072 Hz, and at 1000 Hz between modes | 78.9 % on 30.4 %, and 86.2 % on 26.9 % | No, one-off check |
+| Highest field line on a clamped disc at its fundamental, seen side-on at its peak, against true height × magnification through the real camera | Pixel row predicted 298.3, 273.8 and 107.9, drawn 298, 273 and 107 (flat, ×200, ×1,000) | No, browser check |
+| 3D from almost straight above at the 2D view's scale, with lines off, against the 2D image, same grains | Correlation 0.979 in 16-pixel blocks and 0.938 in 8-pixel blocks, rank correlation 0.987 and 0.980 | No, browser check |
+| Zooming towards the pointer | The plate point under it stays there within 10⁻⁴, from any angle | Yes |
+| Frame rate in 3D with field lines on, NVIDIA RTX 3080 | 52, 55 and 56 frames/s at 100,000, 1,000,000 and 3,000,000 grains, so grains were not the limit | No, browser check |
 | Clicking the 3D plate at (0.4, 0.3) | Driver at r = 0.50, 37°, target 0.50, 36.9° | No, browser check |
 
-Picking uses the plate at rest, so a click on a highly magnified surface lands slightly off.
+The field lines move about the plate's own plane because the height is measured from the plate. A line therefore barely moves where the plate stands still, which is where the sand sits, from any angle.
 
-### Bug found by the 3D view
+Grains are drawn from the same positions the simulation moves, so they cannot disagree with the 2D view on where a grain is. The correlation above stays below 1 because the two views colour them differently: 2D brightens where grains overlap, and 3D draws each one as a lit ball. A grain's height within a pile is a display estimate, since grain contact is not simulated.
 
-Solved plates were reused by a key that left out the edge type, Poisson's ratio and aspect ratio. In the app, a plate with the same thickness ratio as an earlier one could silently take that plate's modes: the Clamped drum preset ran at 597 Hz, a free plate's frequency, instead of 1433 Hz. The 3D view exposed it, because the clamped rim visibly moved. The key now holds every input to the solve, and a test checks it. Published results were not affected, since the tests always solve fresh, but the earlier gallery and demo showed the wrong clamped plate and have been replaced.
+### Bugs found by the 3D view
+
+**Plates sharing a solve.** Solved plates were reused by a key that left out the edge type, Poisson's ratio and aspect ratio. In the app, a plate with the same thickness ratio as an earlier one could silently take that plate's modes: the Clamped drum preset ran at 597 Hz, a free plate's frequency, instead of 1433 Hz. The 3D view exposed it, because the clamped rim visibly moved. The key now holds every input to the solve, and a test checks it. Published results were not affected, since the tests always solve fresh, but the earlier gallery and demo showed the wrong clamped plate and have been replaced.
+
+**False motion at the rim.** Cells just outside the plate copy their nearest plate cell, but the slopes were still taken across the end of those copies, and the air-streaming term took them across the rim itself. Field lines showed it as an impossible top speed. Fixes in `transportFields`: streaming now uses the copied rim, and the outside cells take their plate cell's motion. A regression test covers it.
+
+| Case | Fastest inside | Rim before | Rim after | Grains in the outer 5 % of the radius, before and after |
+|---|---|---|---|---|
+| Lycopodium, free disc, 308 Hz, 100 g | 11.8 mm/s | 1677 mm/s | 13.6 mm/s | 39.4 %, 43.0 % |
+| Sand, free disc, 220 Hz, 10 g | 0.42 mm/s | 7.46 mm/s | 0.57 mm/s | 4.9 %, 5.0 % |
+| Sand, free disc, 3072 Hz, 12 g | 0.16 mm/s | 0.86 mm/s | 0.17 mm/s | 2.2 %, 2.2 % |
+
+Each step is capped at half a grid cell, so the false speed moved few grains. The published patterns barely change, and the gallery is regenerated anyway.
+
+**Peak deflection with several tones.** The readout divided the total acceleration by the strongest tone's ω², which overstated it: the square-wave preset read 51.3 µm when its tones add up to at most 23.3 µm. It now adds the tones' real amplitudes and says "up to". A single tone is unchanged.
 
 ### Calibration
 

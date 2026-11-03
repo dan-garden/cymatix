@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOrbitCamera, eyeOf, orbitBy, pickPlane, projectPoint, viewProjection, zoomBy } from './orbitCamera.js';
+import { axesOf, createOrbitCamera, eyeOf, orbitBy, pickPlane, projectPoint, viewProjection, zoomAt, zoomBy } from './orbitCamera.js';
 
 const near = (got, want, tolerance = 1e-5) => assert.ok(Math.abs(got - want) <= tolerance, `${got} against ${want}`);
 
@@ -52,9 +52,44 @@ test('orbit and zoom stay in range, so the camera can never go under the plate o
   orbitBy(camera, 0, 10);
   assert.ok(camera.elevation < Math.PI / 2);
   zoomBy(camera, 1e-6);
-  assert.ok(camera.distance >= 1.5);
+  assert.ok(camera.distance >= 0.2);
   zoomBy(camera, 1e6);
   assert.ok(camera.distance <= 20);
+});
+
+test('zooming keeps the plate point under the pointer in place, from any angle', () => {
+  for (const azimuth of [0, 0.7, -2.5]) {
+    for (const elevation of [0.5, 0.8, 1.5]) {
+      for (const [u, v] of [[0.6, -0.4], [-0.7, 0.7]]) {
+        const camera = createOrbitCamera({ azimuth, elevation });
+        const screen = projectPoint(camera, [u, 0, v]);
+        for (const factor of [0.8, 0.6, 0.5, 0.3]) {
+          zoomAt(camera, factor, ...screen);
+          const [x, z] = pickPlane(camera, ...screen);
+          near(x, u, 1e-4);
+          near(z, v, 1e-4);
+          const [sx, sy] = projectPoint(camera, [u, 0, v]);
+          near(sx, screen[0], 1e-4);
+          near(sy, screen[1], 1e-4);
+        }
+        zoomAt(camera, 1e6, ...screen);
+        assert.ok(camera.target.every(value => value === 0), 'zooming back out returns home');
+      }
+    }
+  }
+});
+
+test('the camera looks at its target, and its axes turn the same way wherever it looks', () => {
+  const camera = createOrbitCamera({ azimuth: 0.7, elevation: 0.8, distance: 1 });
+  const home = axesOf(camera);
+  camera.target = [0.3, -0.2];
+  const [x, y] = projectPoint(camera, [0.3, 0, -0.2]);
+  near(x, 0);
+  near(y, 0);
+  assert.deepEqual(axesOf(camera), home);
+  near(Math.hypot(...home.right), 1);
+  near(Math.hypot(...home.up), 1);
+  near(home.right[0] * home.up[0] + home.right[1] * home.up[1] + home.right[2] * home.up[2], 0);
 });
 
 test('the matrix is a valid perspective: near things nearer, depth between the clip planes', () => {

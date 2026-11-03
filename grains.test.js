@@ -263,3 +263,26 @@ test('run time: one field update for G = 160 and 8 drives, and a million grains'
   console.log(`transportFields G=160, 8 drives: sand ${sand.toFixed(2)} ms, powder ${powder.toFixed(2)} ms; stepGrains 1M: ${grains.toFixed(1)} ms`);
   assert.ok(sand < 15, `sand ${sand} ms`);
 });
+
+test('the rim adds no false motion: grains there move no faster than on the plate, sand or powder', () => {
+  const size = 160;
+  const cases = [[SPECIES.lycopodium, 307.75, 100, 0.002, 0], [SPECIES.sand, 220, 10, 0.001, -0.6]];
+  for (const [grain, f, gamma, h, driveV] of cases) {
+    const plate = new Plate();
+    plate.keepDrives = true;
+    plate.configure({ shape: 'circle', bc: 'free', E: 68.9e9, rho: 2700, nu: 0.33, h, d: 0.24, Lx: 0.24, Ly: 0.24, fmax: 8000, G: size, zeta: 0.01 });
+    plate.setDrive(0, driveV);
+    const [drive] = plate.deflections(gamma / plate.field([{ f, F: 1 }], g), g);
+    const fields = transportFields({ G: size, drives: [drive], plate: { h, unit: 0.12, E: 68.9e9, rho: 2700, nu: 0.33 }, grain, fluid: AIR, edge: plate.edge }, newFields(size));
+    let inner = 0, rim = 0;
+    for (let j = 0, q = 0; j < size; j++) {
+      for (let i = 0; i < size; i++, q++) {
+        const r = Math.hypot((i + 0.5) * 2 / size - 1, (j + 0.5) * 2 / size - 1);
+        const speed = activityAt(fields.level[q]) * Math.hypot(fields.ux[q], fields.uy[q]);
+        if (r < 0.95) inner = Math.max(inner, speed);
+        else rim = Math.max(rim, speed);
+      }
+    }
+    assert.ok(inner > 0 && rim < 3 * inner, `${grain.name}: ${rim} at the rim against ${inner} inside`);
+  }
+});
